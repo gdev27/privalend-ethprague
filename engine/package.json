@@ -18,7 +18,8 @@
     "@noble/curves": "^1.4.0",
     "@noble/hashes": "^1.4.0",
     "@spacecomputer-io/orbitport-sdk-ts": "^0.2.1",
-    "eciesjs": "^0.4.17"
+    "eciesjs": "^0.4.17",
+    "ethers": "^6.16.0"
   },
   "devDependencies": {
     "@types/bun": "1.2.21",

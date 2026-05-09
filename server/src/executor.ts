@@ -30,7 +30,7 @@ const RAILWAY_URL = stripTrailingSlash(requiredEnv("RAILWAY_URL"));
 const POLL_MS = Number(process.env.EXECUTOR_POLL_MS || 5000);
 
 const POOL_ABI = [
-  "function settleMatch((string proposalId,string borrowIntentId,address borrower,address token,uint256 principal,(address lender,string lendIntentId,uint256 amount,uint256 rate)[] matchedTicks,uint256 effectiveBorrowerRate,address collateralToken,uint256 collateralAmount,bytes32 proposalHash,bytes kmsSignature) proposal) external",
+  "function settleMatch((bytes32 proposalId,bytes32 borrowIntentId,address borrower,address token,uint256 principal,uint256 effectiveBorrowerRate,address collateralToken,uint256 collateralAmount) terms,(address lender,bytes32 lendIntentId,uint256 amount,uint256 rate)[] matchedTicks,bytes32 proposalHash,bytes kmsSignature) external",
   "event LoanMatched(bytes32 indexed proposalId,address indexed borrower,uint256 principal)",
 ];
 
@@ -65,7 +65,13 @@ async function tick(): Promise<void> {
     }
 
     try {
-      const tx = await pool.settleMatch(toContractProposal(proposal));
+      const settlement = toContractSettlement(proposal);
+      const tx = await pool.settleMatch(
+        settlement.terms,
+        settlement.matchedTicks,
+        settlement.proposalHash,
+        settlement.kmsSignature,
+      );
       console.log(`[exec] ${proposal.proposalId} -> tx ${tx.hash}`);
       await tx.wait();
       seen.add(proposal.proposalId);
@@ -77,22 +83,24 @@ async function tick(): Promise<void> {
   }
 }
 
-function toContractProposal(proposal: StoredProposal) {
+function toContractSettlement(proposal: StoredProposal) {
   return {
-    proposalId: proposal.proposalId,
-    borrowIntentId: proposal.borrowIntentId,
-    borrower: proposal.borrower,
-    token: proposal.token,
-    principal: BigInt(proposal.principal),
+    terms: {
+      proposalId: ethers.id(proposal.proposalId),
+      borrowIntentId: ethers.id(proposal.borrowIntentId),
+      borrower: proposal.borrower,
+      token: proposal.token,
+      principal: BigInt(proposal.principal),
+      effectiveBorrowerRate: rateToWad(proposal.effectiveBorrowerRate),
+      collateralToken: proposal.collateralToken,
+      collateralAmount: BigInt(proposal.collateralAmount),
+    },
     matchedTicks: proposal.matchedTicks.map((tick) => ({
       lender: tick.lender,
-      lendIntentId: tick.lendIntentId,
+      lendIntentId: ethers.id(tick.lendIntentId),
       amount: BigInt(tick.amount),
       rate: rateToWad(tick.rate),
     })),
-    effectiveBorrowerRate: rateToWad(proposal.effectiveBorrowerRate),
-    collateralToken: proposal.collateralToken,
-    collateralAmount: BigInt(proposal.collateralAmount),
     proposalHash: proposal.proposalHash,
     kmsSignature: proposal.kmsSignature,
   };
