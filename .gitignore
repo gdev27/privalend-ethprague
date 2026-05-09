@@ -6,3 +6,10 @@ dist/
 .DS_Store
 
 engine/src/.cre_build_tmp.*
+
+# Foundry build artifacts
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/src_*.abi
+contracts/src_*.bin
