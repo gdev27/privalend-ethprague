@@ -1,6 +1,6 @@
 # PrivaLend
 
-**PrivaLend** is a privacy-oriented lending protocol and matching stack built for hackathon-style experimentation (for example **ETHPrague**). The idea is to separate **public commitment** (what users are willing to do, expressed as on-chain intents and eventual loans) from **private negotiation** (interest rates and matching logic that can run inside a trusted execution environment so raw bids are not visible to a central database or the public mempool in the same form).
+**PrivaLend** is a privacy-oriented lending protocol and matching stack built for ETHPrague 2026 Hackathon. The idea is to separate **public commitment** (what users are willing to do, expressed as on-chain intents and eventual loans) from **private negotiation** (interest rates and matching logic that can run inside a trusted execution environment so raw bids are not visible to a central database or the public mempool in the same form).
 
 This repository contains:
 
