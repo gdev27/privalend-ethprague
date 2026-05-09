@@ -1,0 +1,27 @@
+{
+  "name": "privalend-matching-engine",
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "build": "bun build ./src/main.ts --outdir ./dist --target node",
+    "smoke": "bun run scripts/kms-smoke.ts",
+    "auth": "bun run scripts/test-auth.ts",
+    "keypair": "bun run scripts/gen-keypair.ts",
+    "local-workflow": "bun run scripts/local-workflow-server.ts",
+    "postinstall": "bun x cre-setup"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@chainlink/cre-sdk": "^1.0.9",
+    "@noble/curves": "^1.4.0",
+    "@noble/hashes": "^1.4.0",
+    "@spacecomputer-io/orbitport-sdk-ts": "^0.2.1",
+    "eciesjs": "^0.4.17"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.21",
+    "vitest": "^1.6.0"
+  }
+}

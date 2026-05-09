@@ -1,0 +1,21 @@
+{
+  "name": "privalend-server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "start": "bun run src/index.ts",
+    "executor": "bun run src/executor.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.11.0",
+    "ethers": "^6.16.0",
+    "hono": "^4.5.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.0"
+  }
+}

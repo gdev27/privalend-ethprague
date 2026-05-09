@@ -1,0 +1,35 @@
+{
+  "lendIntents": [
+    {
+      "intentId": "L1",
+      "userId": "0x000000000000000000000000000000000000aaa1",
+      "token": "0x0000000000000000000000000000000000000001",
+      "amount": "100",
+      "encryptedRate": "0.04",
+      "epochId": 1,
+      "createdAt": 0
+    },
+    {
+      "intentId": "L2",
+      "userId": "0x000000000000000000000000000000000000aaa2",
+      "token": "0x0000000000000000000000000000000000000001",
+      "amount": "100",
+      "encryptedRate": "0.06",
+      "epochId": 1,
+      "createdAt": 0
+    }
+  ],
+  "borrowIntents": [
+    {
+      "intentId": "B1",
+      "borrower": "0x000000000000000000000000000000000000bbb1",
+      "token": "0x0000000000000000000000000000000000000001",
+      "amount": "150",
+      "encryptedMaxRate": "0.08",
+      "collateralToken": "0x000000000000000000000000000000000000beef",
+      "collateralAmount": "150",
+      "status": "pending",
+      "createdAt": 0
+    }
+  ]
+}

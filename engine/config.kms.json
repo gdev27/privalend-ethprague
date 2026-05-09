@@ -1,0 +1,6 @@
+{
+  "signerMode": "kms",
+  "kmsApiUrl": "https://op.spacecomputer.io",
+  "kmsKeyId": "kms:privalend-1778355686477",
+  "kmsAddress": "0xbD7C5746F9E7783cd4AcDEeE700D195FEB9eE730"
+}

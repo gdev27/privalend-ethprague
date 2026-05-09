@@ -1,0 +1,7 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "bun run start"
+healthcheckPath = "/api/v1/proposals"
+restartPolicyType = "always"

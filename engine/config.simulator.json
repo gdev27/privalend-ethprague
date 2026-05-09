@@ -1,0 +1,5 @@
+{
+  "signerMode": "fallback",
+  "allowInsecureTestSigner": true,
+  "allowPlaintextRates": true
+}

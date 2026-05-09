@@ -1,0 +1,31 @@
+staging-settings:
+  user-workflow:
+    workflow-name: "privalend-matching-staging"
+  workflow-artifacts:
+    workflow-path: "./src/main.ts"
+    config-path: "./config.staging.json"
+    secrets-path: "./secrets.yaml"
+
+simulator-settings:
+  user-workflow:
+    workflow-name: "privalend-matching-simulator"
+  workflow-artifacts:
+    workflow-path: "./src/main.ts"
+    config-path: "./config.simulator.json"
+    secrets-path: ""
+
+production-settings:
+  user-workflow:
+    workflow-name: "privalend-matching-production"
+  workflow-artifacts:
+    workflow-path: "./src/main.ts"
+    config-path: "./config.staging.json"
+    secrets-path: "./secrets.yaml"
+
+kms-staging-settings:
+  user-workflow:
+    workflow-name: "privalend-matching-kms-staging"
+  workflow-artifacts:
+    workflow-path: "./src/main.ts"
+    config-path: "./config.kms.json"
+    secrets-path: "./secrets.kms.yaml"
