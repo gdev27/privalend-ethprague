@@ -2,11 +2,13 @@
 
 **PrivaLend** is a privacy-oriented lending protocol and matching stack built for ETHPrague 2026 Hackathon. The idea is to separate **public commitment** (what users are willing to do, expressed as on-chain intents and eventual loans) from **private negotiation** (interest rates and matching logic that can run inside a trusted execution environment so raw bids are not visible to a central database or the public mempool in the same form).
 
+PrivaLend integrates two primitives from [SpaceComputer](https://docs.spacecomputer.io/docs): **cTRNG** (cosmic true random number generation from orbital satellites) for provably fair tiebreaker settlement when multiple lend intents share the same rate, and **SpaceTEE** (orbital trusted execution environment) as the TEE host for the matching engine — replacing the previous Chainlink CRE dependency with infrastructure whose hardware is physically inaccessible to any ground-based adversary.
+
 This repository contains:
 
 1. **Solidity contracts** (Foundry) — a modular on-chain core: intent book, batched matching with digest approval, multi-lender loans, collateral health, and liquidation.
-2. **Matching engine** (TypeScript) — a deterministic, pure function that turns lend/borrow intent batches into **proposals**, optionally decrypting ECIES-protected rates when a private key is available (intended for **Chainlink CRE** / TEE workflows).
-3. **HTTP server** (Hono) — a thin **intent pool** and epoch tick that forwards batches to the CRE workflow and stores **KMS-signed proposals** for downstream settlement.
+2. **Matching engine** (TypeScript) — a deterministic, pure function that turns lend/borrow intent batches into **proposals**, decrypting ECIES-protected rates inside a **SpaceComputer SpaceTEE** enclave, with cTRNG-seeded tiebreaking for rate-tied intents and **KMS-signed** output proposals.
+3. **HTTP server** (Hono) — a thin **intent pool** and epoch tick that forwards batches to the SpaceTEE workflow and stores **KMS-signed proposals** for downstream settlement.
 
 The sections below walk through the **whole logic** end to end: economics, trust boundaries, each contract, and how the off-chain pieces relate.
 
@@ -29,6 +31,9 @@ The sections below walk through the **whole logic** end to end: economics, trust
   - [Oracle stack](#oracle-stack)
   - [Mocks (tests)](#mocks-tests)
 - [Off-chain components](#off-chain-components)
+- [SpaceComputer infrastructure](#spacecomputer-infrastructure)
+  - [cTRNG — cosmic randomness for tiebreaker settlement](#ctrng--cosmic-randomness-for-tiebreaker-settlement)
+  - [SpaceTEE — orbital trusted execution environment](#spacetee--orbital-trusted-execution-environment)
 - [Trust and privacy model](#trust-and-privacy-model)
 - [Important implementation notes](#important-implementation-notes)
 - [Development and deployment](#development-and-deployment)
@@ -289,7 +294,7 @@ Paths are under `contracts/src/` unless noted.
 - **`engine.ts`** — **Pure** matching: sort borrows by size descending, lends by rate ascending, greedily fill each borrow from compatible lends (same loan `token`), track remaining per `lendIntentId`, compute **principal-weighted average** rate for the borrow; **reject** the partial fill if blended rate **>** borrower’s max rate (rolls back remainder to lenders for that borrow).
 - **`ecies.ts`** — Decrypts rate ciphertexts with `eciesjs` when `CRE_PRIVATE_KEY` is present; optionally accepts **plaintext** decimal rates in `(0, 1)` for local dev when fallback is allowed.
 - **`canonical.ts`** — `canonicalEncode` + `proposalHash` (**keccak256**) over a stable JSON shape so verifiers (or future on-chain code) can pin **exactly** what was signed.
-- **`main.ts`** — Chainlink **CRE** `Runner`: HTTP trigger parses `MatchRequest`, runs engine, signs each proposal hash with **KMS** (Orbitport) or **fallback** local key from secrets, returns `MatchResponse` with `SignedProposal[]`.
+- **`main.ts`** — **SpaceTEE** workflow entry point: HTTP trigger parses `MatchRequest`, fetches the current SpaceComputer cTRNG beacon from Orbitport for epoch-scoped tiebreaker seeding, runs the engine, signs each proposal hash with **KMS** inside the SpaceTEE enclave or a **fallback** local key in dev, returns `MatchResponse` with `SignedProposal[]`.
 
 ### `server/` — Intent pool and epoch tick
 
@@ -303,12 +308,64 @@ Paths are under `contracts/src/` unless noted.
 
 ---
 
+## SpaceComputer infrastructure
+
+PrivaLend integrates two primitives from [SpaceComputer](https://docs.spacecomputer.io/docs) — a space-based security infrastructure provider — to improve fairness guarantees and TEE tamperproofness beyond what terrestrial systems can offer. Both primitives are exposed to developers through SpaceComputer's **Orbitport** gateway (REST API / TypeScript SDK), which abstracts orbital pass windows and ground-station coordination so the integration surface is a conventional HTTP client.
+
+### cTRNG — cosmic randomness for tiebreaker settlement
+
+**What it is.** SpaceComputer's **Cosmic True Random Number Generator (cTRNG)** uses high-energy cosmic radiation particles detected by sensors on orbiting satellites as an entropy source. Each detection event is a quantum phenomenon that is physically unbiasable and externally observable. The satellite digitally signs the derived random bytes on-board; the signed beacon is then published to a public IPFS endpoint refreshed every 60 seconds, so any party can independently verify the randomness provenance.
+
+**Why PrivaLend needs it.** The tick-based matching engine sorts lend intents by rate (ascending) and fills borrows greedily. When multiple lend intents quote an identical rate and there is insufficient demand to fully absorb all of them, a tiebreaker is required to determine which lenders win the fill. Any tiebreaker that can be front-run or predicted gives sophisticated participants an unfair ordering advantage — exactly the kind of information leakage PrivaLend is designed to prevent.
+
+cTRNG eliminates this attack surface:
+
+1. At the start of each epoch, the matching engine fetches the latest signed cTRNG beacon from Orbitport.
+2. The beacon's random bytes seed the tiebreaker comparator for all rate-tied intents in that epoch.
+3. The satellite's digital signature is stored alongside the `SignedProposal` so any auditor can verify that the ordering seed was not chosen by the operator.
+4. Because the beacon is updated every 60 seconds and published before the epoch opens, neither the matcher nor any participant can manipulate which lenders are selected when rates are equal.
+
+This gives every lender at a given rate tier a provably fair, lottery-style chance of being included in a batch — critical for institutional participants who demand transparent, auditable execution.
+
+**Integration point.** The engine (`engine/src/main.ts`) fetches the current beacon via Orbitport before running the matching loop. The beacon hash is embedded in the canonical proposal JSON (see `engine/src/canonical.ts`) and propagated to on-chain digest registration so the tiebreaker seed becomes an immutable part of each epoch's settlement record.
+
+---
+
+### SpaceTEE — orbital trusted execution environment
+
+**What it is.** SpaceComputer's **SpaceTEE** extends the trusted execution environment concept from terrestrial data-center hardware (Intel SGX, AMD SEV) into orbital space. Instead of running enclaves on physically accessible ground hardware, SpaceTEE executes code inside TEE-enabled devices hosted on satellites in orbit. The critical security upgrade is **physical inaccessibility**: even a nation-state adversary with unlimited resources cannot reach the hardware to mount cold-boot, DMA, or decap attacks that threaten conventional TEE deployments.
+
+**Why PrivaLend is migrating from Chainlink CRE to SpaceTEE.** The previous architecture relied on Chainlink CRE (Chainlink Runtime Environment) as its TEE host for the matching engine. Chainlink CRE provides software-level isolation but the underlying servers remain on Earth, making them theoretically susceptible to:
+
+- **Hardware-level attacks** by adversaries with physical data-center access.
+- **Legal compulsion** (server seizure, forced key disclosure) by jurisdictions hosting the ground infrastructure.
+- **Insider threats** at the cloud provider or colocation facility.
+
+SpaceTEE removes the physical-access attack vector entirely. The matching engine enclave runs on hardware that is in orbit during execution; there is no rack to seize, no memory chip to freeze, and no USB port to probe. For large financial institutions (banks, asset managers, prime brokers) considering PrivaLend as infrastructure, this threat model is materially stronger: the same category of adversary that concerns them — well-resourced nation-states and sophisticated insiders — is the adversary SpaceTEE is explicitly designed to defeat.
+
+**Concrete security improvements:**
+
+| Property | Chainlink CRE (terrestrial) | SpaceComputer SpaceTEE (orbital) |
+|----------|----------------------------|----------------------------------|
+| Software isolation | Yes (enclave) | Yes (enclave) |
+| Protection against physical hardware access | No | Yes — hardware is in orbit |
+| Protection against cold-boot / DMA attacks | Partial | Yes — physical inaccessibility |
+| Resistance to legal compulsion / seizure | Jurisdiction-dependent | No accessible jurisdiction |
+| Verifiable attestation | Yes | Yes |
+| Auditability of execution environment | CRE audit scope | SpaceTEE + satellite vendor audit scope |
+
+**Integration point.** The CRE workflow entry point (`engine/src/main.ts`) is refactored to target a SpaceTEE workflow endpoint instead of the Chainlink CRE HTTP trigger. The KMS signing of `SignedProposal` hashes is performed inside the SpaceTEE enclave using Orbitport's key management service, so the private signing key never leaves orbital hardware. The `CRE_WORKFLOW_URL` environment variable is replaced with a `SPACETEE_WORKFLOW_URL` pointing at the Orbitport gateway endpoint for the deployed SpaceTEE workflow.
+
+All existing trust guarantees — that raw interest rates are decrypted and matched only inside the enclave, that the output is a KMS-signed digest, and that the on-chain `MatchingCoordinator` validates against that digest — are preserved. SpaceTEE strengthens the physical security of the enclave host without requiring changes to the on-chain smart contracts.
+
+---
+
 ## Trust and privacy model
 
 | Layer | What is hidden / protected | What is trusted |
 |--------|---------------------------|-----------------|
 | **Public server DB** | Ideally **not** storing plaintext rates if clients submit ECIES ciphertexts only. | Server still sees sizes, addresses, token addresses, collateral amounts. |
-| **CRE / TEE** | Rates decrypted **only** inside the workflow enclave for matching; KMS key used to sign proposal digests. | Trust in CRE host, KMS policy, and that binary matches audited source. |
+| **SpaceTEE / matching enclave** | Rates decrypted **only** inside the orbital SpaceTEE enclave for matching; cTRNG beacon seeds tiebreaker ordering; KMS key used to sign proposal digests. | Trust in SpaceTEE enclave attestation, Orbitport KMS policy, satellite hardware integrity, and that the deployed binary matches audited source. Hardware is physically inaccessible, eliminating the class of ground-based hardware attacks that affect terrestrial TEEs. |
 | **On-chain** | Intents and loans are **fully public** once posted/settled. | **Matcher** is trusted for liveness and correct digest registration; **owner** controls matcher role, epoch transitions, oracle overrides; **oracle** correctness drives liquidations and collateral withdrawal safety. |
 
 The protocol does **not** remove the need for borrowers and lenders to trust **token contracts**, **oracle feeds**, and **governance** of allowlisted addresses.
