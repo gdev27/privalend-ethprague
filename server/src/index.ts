@@ -1,7 +1,8 @@
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import cron from "node-cron";
+import { isAddress } from "ethers";
 import type {
   BorrowIntent,
   LendIntent,
@@ -23,43 +24,71 @@ let epochCounter = 0;
 
 export const app = new Hono();
 app.use("*", cors());
+app.onError((error, c) => {
+  const debug = createRequestDebug(c, "unhandled");
+  console.error(`[api:${debug.requestId}] unhandled ${c.req.method} ${debug.path}:`, formatErrorForLog(error));
+  return c.json(
+    {
+      error: "Internal server error",
+      requestId: debug.requestId,
+      details: error instanceof Error ? error.message : String(error),
+    },
+    500,
+  );
+});
 
 app.get("/", (c) => c.json({ ok: true, service: "privalend-server" }));
 
 app.post("/api/v1/lend-intent", async (c) => {
-  const body = await c.req.json<Record<string, unknown>>();
-  const intent: LendIntent = {
-    intentId: crypto.randomUUID(),
-    userId: normalizeString(body.userId, "userId").toLowerCase(),
-    token: normalizeString(body.token, "token").toLowerCase(),
-    amount: normalizeString(body.amount, "amount"),
-    encryptedRate: normalizeString(body.encryptedRate, "encryptedRate"),
-    epochId: ++epochCounter,
-    createdAt: Date.now(),
-  };
+  const debug = createRequestDebug(c, "lend");
 
-  lendIntents.push(intent);
-  console.log("[lend]", intent.intentId, intent.amount, intent.token);
-  return c.json({ intent });
+  try {
+    const body = await readJsonObject(c, debug);
+    const intent: LendIntent = {
+      intentId: crypto.randomUUID(),
+      userId: normalizeAddress(body.userId, "userId"),
+      token: normalizeAddress(body.token, "token"),
+      amount: normalizeBaseUnits(body.amount, "amount"),
+      encryptedRate: normalizeEncryptedRate(body.encryptedRate, "encryptedRate"),
+      epochId: ++epochCounter,
+      createdAt: Date.now(),
+    };
+
+    lendIntents.push(intent);
+    console.log(
+      `[api:${debug.requestId}] lend accepted intent=${intent.intentId} lender=${intent.userId} token=${intent.token} amount=${intent.amount} rate=${summarizeRatePayload(intent.encryptedRate)}`,
+    );
+    return c.json({ intent, debug: responseDebug(debug) });
+  } catch (error) {
+    return rejectRequest(c, debug, error);
+  }
 });
 
 app.post("/api/v1/borrow-intent", async (c) => {
-  const body = await c.req.json<Record<string, unknown>>();
-  const intent: BorrowIntent = {
-    intentId: crypto.randomUUID(),
-    borrower: normalizeString(body.borrower, "borrower").toLowerCase(),
-    token: normalizeString(body.token, "token").toLowerCase(),
-    amount: normalizeString(body.amount, "amount"),
-    encryptedMaxRate: normalizeString(body.encryptedMaxRate, "encryptedMaxRate"),
-    collateralToken: normalizeString(body.collateralToken, "collateralToken").toLowerCase(),
-    collateralAmount: normalizeString(body.collateralAmount, "collateralAmount"),
-    status: "pending",
-    createdAt: Date.now(),
-  };
+  const debug = createRequestDebug(c, "borrow");
 
-  borrowIntents.push(intent);
-  console.log("[borrow]", intent.intentId, intent.amount, intent.token);
-  return c.json({ intent });
+  try {
+    const body = await readJsonObject(c, debug);
+    const intent: BorrowIntent = {
+      intentId: crypto.randomUUID(),
+      borrower: normalizeAddress(body.borrower, "borrower"),
+      token: normalizeAddress(body.token, "token"),
+      amount: normalizeBaseUnits(body.amount, "amount"),
+      encryptedMaxRate: normalizeEncryptedRate(body.encryptedMaxRate, "encryptedMaxRate"),
+      collateralToken: normalizeAddress(body.collateralToken, "collateralToken"),
+      collateralAmount: normalizeBaseUnits(body.collateralAmount, "collateralAmount"),
+      status: "pending",
+      createdAt: Date.now(),
+    };
+
+    borrowIntents.push(intent);
+    console.log(
+      `[api:${debug.requestId}] borrow accepted intent=${intent.intentId} borrower=${intent.borrower} token=${intent.token} amount=${intent.amount} maxRate=${summarizeRatePayload(intent.encryptedMaxRate)} collateral=${intent.collateralAmount}:${intent.collateralToken}`,
+    );
+    return c.json({ intent, debug: responseDebug(debug) });
+  } catch (error) {
+    return rejectRequest(c, debug, error);
+  }
 });
 
 app.post("/api/v1/cancel-intent/:id", (c) => {
@@ -167,13 +196,6 @@ function expirePendingProposals(): void {
   }
 }
 
-function normalizeString(value: unknown, field: string): string {
-  if (value === undefined || value === null) {
-    throw new Error(`missing ${field}`);
-  }
-  return String(value);
-}
-
 cron.schedule("*/30 * * * * *", () => {
   runEpoch().catch((e) => console.error("[tick] error:", e));
 });
@@ -184,3 +206,204 @@ const port = Number(process.env.PORT || 3000);
 serve({ fetch: app.fetch, port }, (info) => {
   console.log(`PrivaLend server listening on :${info.port}`);
 });
+
+type RequestDebug = {
+  bodySummary?: Record<string, string>;
+  contentType: string;
+  origin: string;
+  path: string;
+  requestId: string;
+  route: "lend" | "borrow" | "unhandled";
+  startedAt: number;
+  userAgent: string;
+};
+
+class ApiInputError extends Error {
+  details?: string;
+  field?: string;
+  status: 400 | 422;
+
+  constructor(message: string, options: { details?: string; field?: string; status?: 400 | 422 } = {}) {
+    super(message);
+    this.name = "ApiInputError";
+    this.details = options.details;
+    this.field = options.field;
+    this.status = options.status ?? 400;
+  }
+}
+
+function createRequestDebug(c: Context, route: RequestDebug["route"]): RequestDebug {
+  return {
+    contentType: c.req.header("content-type") ?? "<missing>",
+    origin: c.req.header("origin") ?? "<none>",
+    path: new URL(c.req.url).pathname,
+    requestId: c.req.header("x-request-id") ?? crypto.randomUUID(),
+    route,
+    startedAt: Date.now(),
+    userAgent: c.req.header("user-agent") ?? "<none>",
+  };
+}
+
+async function readJsonObject(c: Context, debug: RequestDebug): Promise<Record<string, unknown>> {
+  if (!debug.contentType.toLowerCase().includes("application/json")) {
+    console.warn(
+      `[api:${debug.requestId}] ${debug.route} unexpected content-type=${debug.contentType} origin=${debug.origin}`,
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch (error) {
+    console.error(`[api:${debug.requestId}] ${debug.route} invalid JSON:`, formatErrorForLog(error));
+    throw new ApiInputError("Invalid JSON request body", {
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  if (!isRecord(body)) {
+    throw new ApiInputError("Request body must be a JSON object");
+  }
+
+  debug.bodySummary = summarizeBody(body);
+  console.log(
+    `[api:${debug.requestId}] ${debug.route} received path=${debug.path} origin=${debug.origin} content-type=${debug.contentType} userAgent=${summarizeValue(debug.userAgent)} body=${JSON.stringify(debug.bodySummary)}`,
+  );
+  return body;
+}
+
+function rejectRequest(c: Context, debug: RequestDebug, error: unknown): Response {
+  const inputError = error instanceof ApiInputError ? error : undefined;
+  const status = inputError?.status ?? 500;
+  const message = inputError?.message ?? "Unexpected API error";
+  const elapsedMs = Date.now() - debug.startedAt;
+  const payload = {
+    error: message,
+    requestId: debug.requestId,
+    route: debug.route,
+    field: inputError?.field,
+    details: inputError?.details ?? (error instanceof Error ? error.message : String(error)),
+  };
+
+  console.error(
+    `[api:${debug.requestId}] ${debug.route} rejected status=${status} elapsedMs=${elapsedMs} error=${message} field=${payload.field ?? "<none>"} details=${payload.details ?? "<none>"} body=${JSON.stringify(debug.bodySummary ?? {})}`,
+  );
+
+  return c.json(payload, status);
+}
+
+function responseDebug(debug: RequestDebug) {
+  return {
+    requestId: debug.requestId,
+    route: debug.route,
+    elapsedMs: Date.now() - debug.startedAt,
+  };
+}
+
+function normalizeAddress(value: unknown, field: string): string {
+  const text = normalizeNonEmptyString(value, field);
+  if (!isAddress(text)) {
+    throw new ApiInputError(`${field} must be a valid Ethereum address`, {
+      details: `Received ${summarizeValue(text)}`,
+      field,
+      status: 422,
+    });
+  }
+  return text.toLowerCase();
+}
+
+function normalizeBaseUnits(value: unknown, field: string): string {
+  const text = normalizeNonEmptyString(value, field);
+  if (!/^\d+$/.test(text)) {
+    throw new ApiInputError(`${field} must be a base-unit integer string`, {
+      details: `Received ${summarizeValue(text)}`,
+      field,
+      status: 422,
+    });
+  }
+
+  const amount = BigInt(text);
+  if (amount <= 0n) {
+    throw new ApiInputError(`${field} must be greater than zero`, {
+      details: `Received ${text}`,
+      field,
+      status: 422,
+    });
+  }
+
+  return text;
+}
+
+function normalizeEncryptedRate(value: unknown, field: string): string {
+  const text = normalizeNonEmptyString(value, field);
+  if (text.startsWith("0x")) {
+    if (!/^0x[0-9a-fA-F]+$/.test(text) || text.length % 2 !== 0) {
+      throw new ApiInputError(`${field} must be 0x-prefixed hex ciphertext`, {
+        details: `Received ${summarizeRatePayload(text)}`,
+        field,
+        status: 422,
+      });
+    }
+    return text;
+  }
+
+  const plaintextRate = Number(text);
+  if (!Number.isFinite(plaintextRate) || plaintextRate <= 0 || plaintextRate >= 1) {
+    throw new ApiInputError(`${field} must be ciphertext hex or a local-dev decimal rate in (0, 1)`, {
+      details: `Received ${summarizeRatePayload(text)}`,
+      field,
+      status: 422,
+    });
+  }
+
+  return text;
+}
+
+function normalizeNonEmptyString(value: unknown, field: string): string {
+  if (value === undefined || value === null) {
+    throw new ApiInputError(`Missing required field: ${field}`, { field });
+  }
+
+  const text = String(value).trim();
+  if (!text) {
+    throw new ApiInputError(`Field cannot be empty: ${field}`, { field });
+  }
+
+  return text;
+}
+
+function summarizeBody(body: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(body).map(([key, value]) => [
+      key,
+      key.toLowerCase().includes("encrypted") ? summarizeRatePayload(value) : summarizeValue(value),
+    ]),
+  );
+}
+
+function summarizeRatePayload(value: unknown): string {
+  const text = String(value ?? "");
+  if (!text) return "<empty>";
+  if (text.startsWith("0x")) return `hex:${text.length}chars`;
+  return `plaintext-decimal:${text.length}chars`;
+}
+
+function summarizeValue(value: unknown): string {
+  if (value === undefined) return "<undefined>";
+  if (value === null) return "<null>";
+  const text = String(value);
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatErrorForLog(error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+  };
+}

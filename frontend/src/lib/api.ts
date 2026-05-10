@@ -60,6 +60,33 @@ export type PostedIntent = {
   createdAt: number;
 };
 
+export class ApiRequestError extends Error {
+  method: string;
+  path: string;
+  requestId?: string;
+  responseBody?: unknown;
+  status?: number;
+
+  constructor(
+    message: string,
+    options: {
+      method: string;
+      path: string;
+      requestId?: string;
+      responseBody?: unknown;
+      status?: number;
+    },
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.method = options.method;
+    this.path = options.path;
+    this.requestId = options.requestId;
+    this.responseBody = options.responseBody;
+    this.status = options.status;
+  }
+}
+
 export async function postLendIntent(input: {
   lenderAddress: Address;
   tokenAddress: Address;
@@ -101,29 +128,97 @@ export async function postDemoTick() {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(`${publicEnv.backendUrl}${path}`, {
-    headers: { accept: "application/json" },
-  });
-  return parseResponse<T>(response);
+  const method = "GET";
+  let response: Response;
+  try {
+    response = await fetch(`${publicEnv.backendUrl}${path}`, {
+      headers: { accept: "application/json" },
+    });
+  } catch (error) {
+    throw new ApiRequestError(`API ${method} ${path} could not reach ${publicEnv.backendUrl}: ${unknownErrorMessage(error)}`, {
+      method,
+      path,
+    });
+  }
+  return parseResponse<T>(response, { method, path });
 }
 
 async function postJson<T>(path: string, body: unknown, baseUrl = publicEnv.backendUrl): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return parseResponse<T>(response);
+  const method = "POST";
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new ApiRequestError(`API ${method} ${path} could not reach ${baseUrl}: ${unknownErrorMessage(error)}`, {
+      method,
+      path,
+    });
+  }
+  return parseResponse<T>(response, { method, path });
 }
 
-async function parseResponse<T>(response: Response): Promise<T> {
+async function parseResponse<T>(response: Response, request: { method: string; path: string }): Promise<T> {
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  const data = parseJsonResponse(text, request);
 
   if (!response.ok) {
-    const message = typeof data?.error === "string" ? data.error : `Request failed with ${response.status}`;
-    throw new Error(message);
+    const details = isRecord(data) ? data : {};
+    const message = formatApiErrorMessage(response.status, request, details, text);
+    throw new ApiRequestError(message, {
+      method: request.method,
+      path: request.path,
+      requestId: typeof details.requestId === "string" ? details.requestId : undefined,
+      responseBody: data,
+      status: response.status,
+    });
   }
 
   return data as T;
+}
+
+function parseJsonResponse(text: string, request: { method: string; path: string }): unknown {
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new ApiRequestError(`API ${request.method} ${request.path} returned invalid JSON: ${unknownErrorMessage(error)}`, {
+      method: request.method,
+      path: request.path,
+      responseBody: text.slice(0, 500),
+    });
+  }
+}
+
+function formatApiErrorMessage(
+  status: number,
+  request: { method: string; path: string },
+  data: Record<string, unknown>,
+  rawText: string,
+) {
+  const error = typeof data.error === "string" ? data.error : `Request failed with ${status}`;
+  const parts = [`API ${request.method} ${request.path} failed (${status}): ${error}`];
+
+  if (typeof data.field === "string") parts.push(`field=${data.field}`);
+  if (typeof data.details === "string" && data.details && data.details !== error) {
+    parts.push(`details=${data.details}`);
+  } else if (Object.keys(data).length === 0 && rawText) {
+    parts.push(`body=${rawText.slice(0, 200)}`);
+  }
+  if (typeof data.requestId === "string") parts.push(`requestId=${data.requestId}`);
+
+  return parts.join(" | ");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function unknownErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }

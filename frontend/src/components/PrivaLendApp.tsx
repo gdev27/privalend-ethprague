@@ -5,10 +5,9 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Address } from "viem";
 import { formatBaseUnits, formatRateFraction, formatRateWad, formatTokenAmount, parseRatePercent } from "@/lib/amounts";
-import type { PoolLoan, ProtocolState, RelevantProposal } from "@/lib/contracts";
+import type { PoolLoan, ProtocolState } from "@/lib/contracts";
 import { usePrivaLendProtocol } from "@/lib/contracts";
 import { publicEnv } from "@/lib/env";
-import { proposalRole } from "@/lib/proposals";
 
 type PageKey = "overview" | "lend" | "borrow" | "dashboard";
 type TokenSymbol = "USDC" | "WETH";
@@ -122,7 +121,7 @@ export function PrivaLendApp() {
           <OverviewPage active={activePage === "overview"} go={go} />
           <LendPage active={activePage === "lend"} go={go} protocol={protocol} />
           <BorrowPage active={activePage === "borrow"} go={go} protocol={protocol} />
-          <DashboardPage active={activePage === "dashboard"} protocol={protocol} refreshing={refreshing} onRefresh={refreshDashboard} />
+          <DashboardPage active={activePage === "dashboard"} go={go} protocol={protocol} refreshing={refreshing} onRefresh={refreshDashboard} />
         </main>
       </div>
     </>
@@ -653,26 +652,28 @@ function clamp(value: number, min: number, max: number) {
 
 function DashboardPage({
   active,
+  go,
   protocol,
   refreshing,
   onRefresh,
 }: {
   active: boolean;
+  go: (key: PageKey) => void;
   protocol: ProtocolState;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
-  const pendingProposals = protocol.proposals.filter((proposal) => !proposal.settledOnChain && (proposal.status ?? "pending") === "pending");
   const connectionLabel = protocol.isConnected ? formatAddress(protocol.address) : "Not connected";
 
   return (
     <section className={`page${active ? " on" : ""}`} id="p-dashboard">
+      <ModeTabs active="dashboard" go={go} />
       <div className="ph">
         <div className="ph-k">Dashboard</div>
         <h1 className="ph-title">
           Your <em>positions</em>
         </h1>
-        <p className="ph-sub">Live backend intents, signed proposals, and on-chain PrivaLendPool loans for the connected Sepolia wallet.</p>
+        <p className="ph-sub">Live on-chain PrivaLendPool loans for the connected Sepolia wallet.</p>
       </div>
       <div className="ebar">
         <div className="ec">
@@ -704,106 +705,12 @@ function DashboardPage({
           </button>
         </div>
       )}
-      <IntentTable protocol={protocol} />
-      <ProposalTable proposals={pendingProposals} protocol={protocol} />
       <LoanTable loans={protocol.loans} protocol={protocol} />
       <p className="help">
         <strong style={{ color: "var(--text)" }}>Repay</strong> returns principal to the pool for lender claims. <strong style={{ color: "var(--text)" }}>Withdraw</strong> pulls a lender’s
         claimable repayment. <strong style={{ color: "var(--text)" }}>Close</strong> returns collateral after full repayment.
       </p>
     </section>
-  );
-}
-
-function IntentTable({ protocol }: { protocol: ProtocolState }) {
-  return (
-    <div className="tshell">
-      <div className="th">
-        <span>Backend intents</span>
-        <span style={{ fontSize: "12px", color: "var(--dim)" }}>{protocol.postedIntents.length ? "Session wallet" : "None yet"}</span>
-      </div>
-      {protocol.postedIntents.length === 0 ? (
-        <EmptyState label="Submit a lend offer or borrow request to see the backend intent here." />
-      ) : (
-        <div className="tbl-scroll">
-          <table className="tbl compact-tbl">
-            <thead>
-              <tr>
-                <th>Intent</th>
-                <th>Side</th>
-                <th>Amount</th>
-                <th>Private rate</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {protocol.postedIntents.map((intent) => (
-                <tr key={intent.intentId}>
-                  <td className="mn">{shortId(intent.intentId)}</td>
-                  <td>
-                    <RoleBadge role={intent.side === "lend" ? "lender" : "borrower"} />
-                  </td>
-                  <td className="mn">{formatTokenAmount(BigInt(intent.amount), protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
-                  <td className="mn">{formatRateFraction(intent.rate)}</td>
-                  <td>
-                    <StatusBadge label={intentDisplayStatus(intent, protocol)} status={intentDisplayStatus(intent, protocol) === "Waiting" ? "pending" : "active"} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ProposalTable({ proposals, protocol }: { proposals: RelevantProposal[]; protocol: ProtocolState }) {
-  return (
-    <div className="tshell">
-      <div className="th">
-        <span>Signed proposals</span>
-        <span style={{ fontSize: "12px", color: "var(--dim)" }}>{proposals.length ? "Pending settlement" : "No pending matches"}</span>
-      </div>
-      {proposals.length === 0 ? (
-        <EmptyState label="Matched signed proposals involving this wallet will appear before settlement." />
-      ) : (
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Proposal</th>
-                <th>You are</th>
-                <th>Principal</th>
-                <th>Rate</th>
-                <th>Collateral</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {proposals.map((proposal) => (
-                <tr key={proposal.proposalId}>
-                  <td className="mn">{shortId(proposal.proposalId)}</td>
-                  <td>{protocol.address && <RoleBadge role={proposalRole(proposal, protocol.address)} />}</td>
-                  <td className="mn">{formatTokenAmount(BigInt(proposal.principal), protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
-                  <td className="mn">{formatRateFraction(proposal.effectiveBorrowerRate)}</td>
-                  <td className="mn">{formatTokenAmount(BigInt(proposal.collateralAmount), protocol.collateralToken.decimals, protocol.collateralToken.symbol)}</td>
-                  <td>
-                    <StatusBadge label={proposal.settledOnChain ? "Settled" : "Pending settlement"} status={proposal.settledOnChain ? "active" : "pending"} />
-                  </td>
-                  <td>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void protocol.settleProposal(proposal)} disabled={proposal.settledOnChain || protocol.actionPending}>
-                      Settle fallback
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -937,22 +844,10 @@ function EmptyState({ label }: { label: string }) {
   return <div className="empty-state">{label}</div>;
 }
 
-function intentDisplayStatus(intent: import("@/lib/api").PostedIntent, protocol: ProtocolState) {
-  const proposal = protocol.proposals.find((item) =>
-    intent.side === "borrow" ? item.borrowIntentId === intent.intentId : item.matchedTicks.some((tick) => tick.lendIntentId === intent.intentId),
-  );
-  if (!proposal) return "Waiting";
-  return proposal.settledOnChain ? "Settled" : "Matched";
-}
-
 function loanStatusLabel(status: PoolLoan["status"]) {
   if (status === 1) return "Active";
   if (status === 2) return "Repaid";
   return "None";
-}
-
-function shortId(value: string) {
-  return value.length <= 12 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function formatAddress(address?: Address) {
@@ -966,19 +861,7 @@ function formatBalancePortion(token: ProtocolState["debtToken"], percent: 25 | 5
 
 function PrivaLendLogo() {
   return (
-    <svg width="34" height="34" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="lg" x1="0" y1="0" x2="40" y2="40">
-          <stop offset="0%" stopColor="#6d28d9" />
-          <stop offset="100%" stopColor="#1e3a5f" />
-        </linearGradient>
-      </defs>
-      <polygon points="20,2 35,11 35,29 20,38 5,29 5,11" fill="url(#lg)" stroke="rgba(167,139,250,.5)" strokeWidth="1" />
-      <rect x="11.5" y="13" width="3.5" height="14" rx="1" fill="rgba(255,255,255,.92)" />
-      <path d="M15 13 Q22.5 13 22.5 17.5 Q22.5 22 15 22" stroke="rgba(255,255,255,.92)" strokeWidth="3" fill="none" strokeLinecap="round" />
-      <rect x="24" y="15" width="3" height="11" rx="1" fill="#34d399" />
-      <rect x="24" y="23" width="6.5" height="3" rx="1" fill="#34d399" />
-    </svg>
+    <img className="logo-image" src="/brand/privalend-mark.png" width="34" height="34" alt="" aria-hidden="true" />
   );
 }
 
