@@ -18,19 +18,19 @@ import {Types} from "../src/libraries/Types.sol";
 contract SepoliaFullWorkflow is Script {
     uint256 internal constant DEFAULT_CHAIN_ID = 11155111;
 
-    address internal constant DEFAULT_INTENT_REGISTRY = 0x6acB6D3026F7a6edC107bAd137559d8c24B3788B;
-    address internal constant DEFAULT_LOAN_CORE = 0xcdD84BA775fc836e881e95156325EFf9804EB09E;
-    address internal constant DEFAULT_MATCHING_COORDINATOR = 0x52E8669aE4a85b662aD688F59675D0523A0497f5;
-    address internal constant DEFAULT_CHAINLINK_ORACLE = 0x37c69D9cC277E760EF612C60fc98E21b23b7594e;
-    address internal constant DEFAULT_ORACLE_ROUTER = 0xF6ca94923c905aaDa8E99Aa6Aa78f8f5A1D819D5;
-    address internal constant DEFAULT_POSITION_MANAGER = 0x3439e2A2713321345D366408A3C5089defbEADAc;
-    address internal constant DEFAULT_LIQUIDATION_MANAGER = 0xb5CB832B46c299E5A5C4Ef92617bd5765d73E1e3;
+    address internal constant DEFAULT_INTENT_REGISTRY = 0x1bDb5993C3D1F089DaEab4351e1C0c92685301D7;
+    address internal constant DEFAULT_LOAN_CORE = 0xC82A109460078976EFE0CB775cAF213C3787f8f3;
+    address internal constant DEFAULT_MATCHING_COORDINATOR = 0xcCDA03ec6BA2768Fc50b1fF0AD18462Beb9f6586;
+    address internal constant DEFAULT_CHAINLINK_ORACLE = 0x36bF3b2De28c407F4Fa961aa4f0b71621ba51ACB;
+    address internal constant DEFAULT_ORACLE_ROUTER = 0xfEa196790eA9D83dd414bFdCc72017F6349b2F47;
+    address internal constant DEFAULT_POSITION_MANAGER = 0x1Ac826fb43e430a6c7BFAD461a0fa8a752f483Fd;
+    address internal constant DEFAULT_LIQUIDATION_MANAGER = 0xeDf2e47063C82bAa6B73cd1736eE53e5551dd2E8;
     address internal constant DEFAULT_MATCHER = 0xBf879877e05430aC14fcEF6fE102DF29e264b114;
 
-    address internal constant DEFAULT_DEBT_TOKEN = 0x53C0327F3Fb815c237dbb30bEE5c8210f6843F9F;
-    address internal constant DEFAULT_COLLATERAL_TOKEN = 0x8564748c702A363EA620FFa7040cC1829f9d50Fb;
-    address internal constant DEFAULT_DEBT_FEED = 0x6DEaA87477201026D3d565c18e7967F92314f3AF;
-    address internal constant DEFAULT_COLLATERAL_FEED = 0x51A4fe07Ec9cd8d0414AE67c59216629DAEf5DD2;
+    address internal constant DEFAULT_DEBT_TOKEN = 0x1ba22D78fB5d9910E77612032fE5d2dDF1A8A8F1;
+    address internal constant DEFAULT_COLLATERAL_TOKEN = 0x70B0FE94eE8665CF63Bf466cCC0Ed9bcCeBaa1F3;
+    address internal constant DEFAULT_DEBT_FEED = 0x328608974405B181307435345471a8c0D01C7fc5;
+    address internal constant DEFAULT_COLLATERAL_FEED = 0xcF5C297fcFd61d5A1b19F4C01c7422Bf7c571094;
 
     function run() external {
         uint256 privateKey = _workflowPrivateKey();

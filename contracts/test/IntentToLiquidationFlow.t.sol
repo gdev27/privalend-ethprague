@@ -49,8 +49,8 @@ contract IntentToLiquidationFlowTest is Test {
         core.setPositionManager(address(positionManager), true);
         core.setLiquidationManager(address(liquidationManager), true);
 
-        debt = new MockERC20(6);
-        collateral = new MockERC20(6);
+        debt = new MockERC20("Mock USDC", "USDC", 6);
+        collateral = new MockERC20("Mock USDC", "USDC", 6);
         debtFeed = new MockChainlinkFeed(8);
         collateralFeed = new MockChainlinkFeed(8);
         debtFeed.setAnswer(1e8, block.timestamp);

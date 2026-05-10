@@ -21,8 +21,8 @@ contract LoanCoreTest is Test {
 
     function setUp() public {
         core = new LoanCore();
-        debt = new MockERC20(6);
-        collateral = new MockERC20(6);
+        debt = new MockERC20("Mock USDC", "USDC", 6);
+        collateral = new MockERC20("Mock USDC", "USDC", 6);
 
         core.setCoordinator(coordinator, true);
         core.setPositionManager(positionManager, true);

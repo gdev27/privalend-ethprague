@@ -1,9 +1,25 @@
 "use client";
 
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Address } from "viem";
+import { formatBaseUnits, formatRateFraction, formatRateWad, formatTokenAmount, parseRatePercent } from "@/lib/amounts";
+import type { PoolLoan, ProtocolState, RelevantProposal } from "@/lib/contracts";
+import { usePrivaLendProtocol } from "@/lib/contracts";
+import { publicEnv } from "@/lib/env";
+import { proposalRole } from "@/lib/proposals";
 
 type PageKey = "overview" | "lend" | "borrow" | "dashboard";
+type TokenSymbol = "USDC" | "WETH";
+
+const TOKEN_META: Record<TokenSymbol, { icon: string; alt: string }> = {
+  USDC: { icon: "/tokens/usdc.png", alt: "USDC logo" },
+  WETH: { icon: "/tokens/weth.png", alt: "WETH logo" },
+};
+
+const WETH_REFERENCE_PRICE_USD = publicEnv.wethReferencePriceUsd;
+const CENTRALIZED_LIQUIDATION_LTV = publicEnv.liquidationLtvPercent;
 
 const PAGES: Record<PageKey, { label: string }> = {
   overview: { label: "Overview" },
@@ -22,8 +38,8 @@ const NAV_ITEMS: Array<{ key: PageKey; label: string; icon: ReactNode }> = [
 export function PrivaLendApp() {
   const [activePage, setActivePage] = useState<PageKey>("overview");
   const [routeShift, setRouteShift] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const protocol = usePrivaLendProtocol();
   const routeTimer = useRef<number | null>(null);
   const routeFrame = useRef<number | null>(null);
   const refreshTimer = useRef<number | null>(null);
@@ -50,14 +66,12 @@ export function PrivaLendApp() {
     window.scrollTo(0, 0);
   }
 
-  function connectWallet() {
-    setConnected(true);
-  }
-
   function refreshDashboard() {
     if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
     setRefreshing(true);
-    refreshTimer.current = window.setTimeout(() => setRefreshing(false), 600);
+    void protocol.refreshAll().finally(() => {
+      refreshTimer.current = window.setTimeout(() => setRefreshing(false), 300);
+    });
   }
 
   return (
@@ -102,18 +116,75 @@ export function PrivaLendApp() {
             <div className="crumb">
               <strong>PrivaLend</strong> · <span id="tbar">{PAGES[activePage].label}</span>
             </div>
-            <button type="button" className="btn btn-primary btn-sm" id="connect-btn" onClick={connectWallet}>
-              {connected ? "Connected" : "Connect wallet"}
-            </button>
+            <WalletConnectButton />
           </header>
 
           <OverviewPage active={activePage === "overview"} go={go} />
-          <LendPage active={activePage === "lend"} />
-          <BorrowPage active={activePage === "borrow"} />
-          <DashboardPage active={activePage === "dashboard"} connected={connected} refreshing={refreshing} onRefresh={refreshDashboard} />
+          <LendPage active={activePage === "lend"} go={go} protocol={protocol} />
+          <BorrowPage active={activePage === "borrow"} go={go} protocol={protocol} />
+          <DashboardPage active={activePage === "dashboard"} protocol={protocol} refreshing={refreshing} onRefresh={refreshDashboard} />
         </main>
       </div>
     </>
+  );
+}
+
+function WalletConnectButton() {
+  return (
+    <ConnectButton.Custom>
+      {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal, authenticationStatus }) => {
+        const ready = mounted && authenticationStatus !== "loading";
+        const connected = ready && account && chain && (!authenticationStatus || authenticationStatus === "authenticated");
+
+        return (
+          <div
+            className="wallet-connect"
+            {...(!ready && {
+              "aria-hidden": true,
+              style: {
+                opacity: 0,
+                pointerEvents: "none" as const,
+                userSelect: "none" as const,
+              },
+            })}
+          >
+            {(() => {
+              if (!connected) {
+                return (
+                  <button type="button" className="btn btn-primary btn-sm" id="connect-btn" onClick={openConnectModal}>
+                    Connect wallet
+                  </button>
+                );
+              }
+
+              if (chain.unsupported || chain.id !== publicEnv.chainId) {
+                return (
+                  <button type="button" className="btn btn-warn btn-sm" id="connect-btn" onClick={openChainModal}>
+                    Switch to {publicEnv.networkName}
+                  </button>
+                );
+              }
+
+              return (
+                <div className="wallet-actions">
+                  <button type="button" className="btn btn-ghost btn-sm wallet-chain" onClick={openChainModal}>
+                    {chain.hasIcon && (
+                      <span className="wallet-chain-icon" style={{ background: chain.iconBackground }}>
+                        {chain.iconUrl && <img alt={chain.name ?? "Chain icon"} src={chain.iconUrl} />}
+                      </span>
+                    )}
+                    <span>{chain.name}</span>
+                  </button>
+                  <button type="button" className="btn btn-primary btn-sm wallet-account" id="connect-btn" onClick={openAccountModal}>
+                    <span>{account.displayName}</span>
+                  </button>
+                </div>
+              );
+            })()}
+          </div>
+        );
+      }}
+    </ConnectButton.Custom>
   );
 }
 
@@ -161,155 +232,439 @@ function OverviewPage({ active, go }: { active: boolean; go: (key: PageKey) => v
   );
 }
 
-function LendPage({ active }: { active: boolean }) {
+function ModeTabs({ active, go }: { active: PageKey; go: (key: PageKey) => void }) {
+  const tabs: Array<{ key: PageKey; label: string }> = [
+    { key: "borrow", label: "Borrow" },
+    { key: "lend", label: "Lend" },
+    { key: "dashboard", label: "Status" },
+  ];
+
   return (
-    <section className={`page${active ? " on" : ""}`} id="p-lend">
-      <div className="ph">
-        <div className="ph-k">Lend</div>
-        <h1 className="ph-title">
-          Offer <em>liquidity</em>
-        </h1>
-        <p className="ph-sub">Tell us what you’re willing to lend and the lowest rate you’d accept. We encrypt that rate before sending anything to the server.</p>
-      </div>
-      <div className="note">Your rate is encrypted in your browser. The matching service sees amounts and tokens, not your exact rate, until a secure match runs.</div>
-      <div className="card">
-        <div className="ch">Your offer</div>
-        <div className="fg">
-          <label htmlFor="lend-asset">Asset to lend</label>
-          <select id="lend-asset" title="Asset to lend">
-            <option>USDC</option>
-            <option>DAI</option>
-            <option>WETH</option>
-          </select>
-        </div>
-        <div className="fg">
-          <label htmlFor="lend-coll">Collateral you accept</label>
-          <select id="lend-coll" title="Collateral you accept">
-            <option>WETH</option>
-            <option>WBTC</option>
-            <option>USDC</option>
-          </select>
-        </div>
-        <div className="frow">
-          <div className="fg">
-            <label htmlFor="lend-amt">
-              Maximum amount <span className="inline-hint">(human amount)</span>
-            </label>
-            <input id="lend-amt" type="text" inputMode="decimal" placeholder="0.00" autoComplete="off" title="Maximum amount" />
-          </div>
-          <div className="fg">
-            <label htmlFor="lend-rate">
-              Lowest rate you’ll accept <span className="inline-hint">(basis points · 100 = 1%)</span>
-            </label>
-            <input id="lend-rate" type="number" min="1" placeholder="e.g. 500" title="Rate floor in basis points" />
-          </div>
-        </div>
-        <div className="fg">
-          <label htmlFor="lend-exp">Offer valid until</label>
-          <input id="lend-exp" type="datetime-local" title="Expiry" />
-          <p className="hint">After this time, your offer won’t be matched unless you post a new one.</p>
-        </div>
-        <button type="button" className="btn btn-primary" style={{ width: "100%", marginTop: "8px" }}>
-          Encrypt and submit offer
+    <div className="mode-tabs" role="tablist" aria-label="PrivaLend actions">
+      {tabs.map((tab) => (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={active === tab.key}
+          className={`mode-tab${active === tab.key ? " on" : ""}`}
+          onClick={() => go(tab.key)}
+          key={tab.key}
+        >
+          {tab.label}
         </button>
+      ))}
+    </div>
+  );
+}
+
+function AssetAmountField({
+  balance,
+  id,
+  label,
+  maxDisabled,
+  onQuickAmount,
+  token,
+  value,
+  onChange,
+  placeholder = "0",
+}: {
+  balance?: string;
+  id: string;
+  label: string;
+  maxDisabled?: boolean;
+  onQuickAmount?: (percent: 25 | 50 | 75 | 100) => void;
+  token: TokenSymbol;
+  value?: string;
+  onChange?: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="asset-field">
+      <div className="asset-field-head">
+        <label htmlFor={id}>{label}</label>
+        {balance && <span className="asset-balance">Balance {balance}</span>}
       </div>
-      <p className="help">
-        After a loan is matched, you’ll receive repayments proportionally. Withdraw what’s available anytime from <strong style={{ color: "var(--text)" }}>Dashboard</strong>.
-      </p>
+      <div className="asset-control">
+        <input id={id} type="text" inputMode="decimal" placeholder={placeholder} autoComplete="off" value={value} onChange={(event) => onChange?.(event.target.value)} />
+        <TokenPill token={token} />
+      </div>
+      {onQuickAmount && (
+        <div className="quick-amount-grid" aria-label={`${token} quick amount`}>
+          {([
+            { label: "25%", value: 25 },
+            { label: "50%", value: 50 },
+            { label: "75%", value: 75 },
+            { label: "MAX", value: 100 },
+          ] as const).map((item) => (
+            <button
+              type="button"
+              className="quick-amount-btn"
+              onClick={() => onQuickAmount(item.value)}
+              disabled={maxDisabled}
+              key={item.value}
+              aria-label={`Use ${item.label} of ${token} balance`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LockedAssetField({ label, token }: { label: string; token: TokenSymbol }) {
+  return (
+    <div className="asset-field asset-field-locked">
+      <span className="asset-label">{label}</span>
+      <div className="asset-control">
+        <span className="locked-asset-copy">Only {token}</span>
+        <TokenPill token={token} />
+      </div>
+    </div>
+  );
+}
+
+function TokenPill({ token }: { token: TokenSymbol }) {
+  return (
+    <span className="token-pill" aria-label={`${token} fixed asset`}>
+      <span className="token-icon">
+        <img src={TOKEN_META[token].icon} alt={TOKEN_META[token].alt} width="24" height="24" />
+      </span>
+      <span>{token}</span>
+    </span>
+  );
+}
+
+function MetricInput({
+  id,
+  label,
+  suffix,
+  type = "number",
+  min,
+  step,
+  value,
+  onChange,
+  placeholder,
+}: {
+  id: string;
+  label: string;
+  suffix?: string;
+  type?: "number";
+  min?: string;
+  step?: string;
+  value?: string;
+  onChange?: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="metric-field">
+      <label htmlFor={id}>{label}</label>
+      <div className="metric-control">
+        <input id={id} type={type} min={min} step={step} placeholder={placeholder} value={value} onChange={(event) => onChange?.(event.target.value)} />
+        {suffix && <span>{suffix}</span>}
+      </div>
+    </div>
+  );
+}
+
+function LendPage({ active, go, protocol }: { active: boolean; go: (key: PageKey) => void; protocol: ProtocolState }) {
+  const [lendAmount, setLendAmount] = useState("");
+  const [minimumRate, setMinimumRate] = useState("");
+  const [durationDays, setDurationDays] = useState("");
+  const lendAmountBaseUnits = protocol.parseDebtAmount(lendAmount);
+  const minimumRateFraction = parseRatePercent(minimumRate);
+  const hasEnoughBalance = lendAmountBaseUnits !== null && protocol.debtToken.balance >= lendAmountBaseUnits;
+  const hasEnoughAllowance = lendAmountBaseUnits !== null && protocol.debtToken.allowance >= lendAmountBaseUnits;
+  const formReady = lendAmountBaseUnits !== null && minimumRateFraction !== null && hasEnoughBalance;
+
+  return (
+    <section className={`page intent-page${active ? " on" : ""}`} id="p-lend">
+      <ModeTabs active="lend" go={go} />
+      <div className="intent-layout">
+        <div className="card intent-panel">
+          <div className="intent-panel-head">
+            <div>
+              <div className="ch">Your offer</div>
+              <h2>Private lend offer</h2>
+            </div>
+            <span className="pair-badge">USDC / WETH</span>
+          </div>
+          <div className="asset-stack">
+            <AssetAmountField
+              id="lend-amt"
+              label="You're lending"
+              token="USDC"
+              value={lendAmount}
+              onChange={setLendAmount}
+              balance={formatTokenAmount(protocol.debtToken.balance, protocol.debtToken.decimals, protocol.debtToken.symbol)}
+              onQuickAmount={(percent) => setLendAmount(formatBalancePortion(protocol.debtToken, percent))}
+              maxDisabled={protocol.debtToken.balance === 0n}
+            />
+            <LockedAssetField label="Collateral accepted" token="WETH" />
+          </div>
+          <div className="metric-grid">
+            <MetricInput id="lend-rate" label="Minimum rate" suffix="%" min="0" step="0.01" placeholder="5.00" value={minimumRate} onChange={setMinimumRate} />
+            <MetricInput id="lend-duration" label="Offer duration" suffix="days" min="1" step="1" placeholder="30" value={durationDays} onChange={setDurationDays} />
+          </div>
+          <EncryptionNotice mode={protocol.encryptionMode} />
+          <IntentActionButton
+            className="btn-primary"
+            formReady={formReady}
+            invalidLabel={lendAmountBaseUnits === null || minimumRateFraction === null ? "Enter amount and rate" : "Insufficient USDC"}
+            needsApproval={formReady && !hasEnoughAllowance}
+            approvalLabel="Approve USDC"
+            readyLabel="Encrypt and submit offer"
+            protocol={protocol}
+            onApprove={() => lendAmountBaseUnits && void protocol.approveDebt(lendAmountBaseUnits)}
+            onSubmit={() => lendAmountBaseUnits && minimumRateFraction && void protocol.submitLend({ amount: lendAmountBaseUnits, minimumRate: minimumRateFraction })}
+          />
+        </div>
+      </div>
     </section>
   );
 }
 
-function BorrowPage({ active }: { active: boolean }) {
+function BorrowPage({ active, go, protocol }: { active: boolean; go: (key: PageKey) => void; protocol: ProtocolState }) {
+  const [borrowAmount, setBorrowAmount] = useState("");
+  const [collateralAmount, setCollateralAmount] = useState("");
+  const [maxRate, setMaxRate] = useState("");
+  const [durationDays, setDurationDays] = useState("");
+  const borrowAmountBaseUnits = protocol.parseDebtAmount(borrowAmount);
+  const collateralAmountBaseUnits = protocol.parseCollateralAmount(collateralAmount);
+  const maxRateFraction = parseRatePercent(maxRate);
+  const hasEnoughCollateral = collateralAmountBaseUnits !== null && protocol.collateralToken.balance >= collateralAmountBaseUnits;
+  const hasEnoughAllowance = collateralAmountBaseUnits !== null && protocol.collateralToken.allowance >= collateralAmountBaseUnits;
+  const formReady = borrowAmountBaseUnits !== null && collateralAmountBaseUnits !== null && maxRateFraction !== null && hasEnoughCollateral;
+  const risk = calculateBorrowRisk({
+    borrowAmount,
+    collateralAmount,
+  });
+
   return (
-    <section className={`page${active ? " on" : ""}`} id="p-borrow">
-      <div className="ph">
-        <div className="ph-k">Borrow</div>
-        <h1 className="ph-title">
-          Request a <em>loan</em>
-        </h1>
-        <p className="ph-sub">
-          Say how much you need, what you’ll post as collateral, and the highest interest you’re willing to pay. That maximum rate is encrypted like your other private fields.
-        </p>
-      </div>
-      <div className="note note-w">The protocol won’t match you at a higher rate than your limit, or with weaker collateral safety than you require.</div>
-      <div className="card">
-        <div className="ch">Your request</div>
-        <div className="fg">
-          <label htmlFor="bor-asset">Asset to borrow</label>
-          <select id="bor-asset" title="Asset to borrow">
-            <option>USDC</option>
-            <option>DAI</option>
-            <option>WETH</option>
-          </select>
-        </div>
-        <div className="fg">
-          <label htmlFor="bor-coll-tok">Collateral asset</label>
-          <select id="bor-coll-tok" title="Collateral asset">
-            <option>WETH</option>
-            <option>WBTC</option>
-          </select>
-        </div>
-        <div className="frow">
-          <div className="fg">
-            <label htmlFor="bor-amt">
-              Amount to borrow <span className="inline-hint">(human amount)</span>
-            </label>
-            <input id="bor-amt" type="text" inputMode="decimal" placeholder="0.00" autoComplete="off" />
+    <section className={`page intent-page${active ? " on" : ""}`} id="p-borrow">
+      <ModeTabs active="borrow" go={go} />
+      <div className="intent-layout">
+        <div className="card intent-panel">
+          <div className="intent-panel-head">
+            <div>
+              <div className="ch">Your request</div>
+              <h2>Borrow with privacy</h2>
+            </div>
+            <span className="pair-badge">USDC / WETH</span>
           </div>
-          <div className="fg">
-            <label htmlFor="bor-ceiling">
-              Highest rate you’ll pay <span className="inline-hint">(basis points · 100 = 1%)</span>
-            </label>
-            <input id="bor-ceiling" type="number" min="1" placeholder="e.g. 800" />
+          <div className="asset-stack">
+            <AssetAmountField id="bor-amt" label="You're borrowing" token="USDC" value={borrowAmount} onChange={setBorrowAmount} />
+            <AssetAmountField
+              id="bor-coll-amt"
+              label="Collateral"
+              token="WETH"
+              value={collateralAmount}
+              onChange={setCollateralAmount}
+              balance={formatTokenAmount(protocol.collateralToken.balance, protocol.collateralToken.decimals, protocol.collateralToken.symbol)}
+              onQuickAmount={(percent) => setCollateralAmount(formatBalancePortion(protocol.collateralToken, percent))}
+              maxDisabled={protocol.collateralToken.balance === 0n}
+            />
           </div>
-        </div>
-        <div className="frow">
-          <div className="fg">
-            <label htmlFor="bor-coll-amt">
-              Collateral amount <span className="inline-hint">(for matching)</span>
-            </label>
-            <input id="bor-coll-amt" type="text" inputMode="decimal" placeholder="0.00" autoComplete="off" />
+          <div className="metric-grid">
+            <MetricInput id="bor-ceiling" label="Max rate" suffix="%" min="0" step="0.01" placeholder="9.50" value={maxRate} onChange={setMaxRate} />
+            <MetricInput id="bor-duration" label="Offer duration" suffix="days" min="1" step="1" placeholder="30" value={durationDays} onChange={setDurationDays} />
           </div>
-          <div className="fg">
-            <label htmlFor="bor-ratio">
-              Minimum collateral safety <span className="inline-hint">(basis points)</span>
-            </label>
-            <input id="bor-ratio" type="number" min="10000" placeholder="15000" title="Minimum collateral ratio in basis points" />
-            <p className="hint">10000 = at least as much collateral value as debt; 15000 ≈ 150%.</p>
-          </div>
+          <BorrowRiskPanel risk={risk} />
+          <EncryptionNotice mode={protocol.encryptionMode} />
+          <IntentActionButton
+            className="btn-warn"
+            formReady={formReady}
+            invalidLabel={borrowAmountBaseUnits === null || collateralAmountBaseUnits === null || maxRateFraction === null ? "Enter amount, collateral, and rate" : "Insufficient WETH"}
+            needsApproval={formReady && !hasEnoughAllowance}
+            approvalLabel="Approve WETH"
+            readyLabel="Encrypt and submit request"
+            protocol={protocol}
+            onApprove={() => collateralAmountBaseUnits && void protocol.approveCollateral(collateralAmountBaseUnits)}
+            onSubmit={() =>
+              borrowAmountBaseUnits &&
+              collateralAmountBaseUnits &&
+              maxRateFraction &&
+              void protocol.submitBorrow({
+                amount: borrowAmountBaseUnits,
+                collateralAmount: collateralAmountBaseUnits,
+                maxRate: maxRateFraction,
+              })
+            }
+          />
         </div>
-        <div className="fg">
-          <label htmlFor="bor-exp">Request valid until</label>
-          <input id="bor-exp" type="datetime-local" />
-          <p className="hint">After this time, post a new request if you still want to borrow.</p>
-        </div>
-        <button type="button" className="btn btn-warn" style={{ width: "100%", marginTop: "8px" }}>
-          Encrypt and submit request
-        </button>
-      </div>
-      <div className="card" style={{ marginTop: "20px" }}>
-        <div className="ch">While the loan is open</div>
-        <p className="help" style={{ margin: 0 }}>
-          <strong style={{ color: "var(--text)" }}>Health</strong> compares your collateral value to what you owe. Keep it above your minimum to avoid liquidation. You can repay early,
-          add collateral, or withdraw spare collateral when you’re safely above that line. Anyone may liquidate an unhealthy position — that’s how lenders stay protected.
-        </p>
       </div>
     </section>
   );
+}
+
+function EncryptionNotice({ mode }: { mode: ProtocolState["encryptionMode"] }) {
+  if (mode === "ecies") {
+    return null;
+  }
+
+  return <div className="mini-alert mini-alert-warn">Plaintext local fallback is active because NEXT_PUBLIC_CRE_PUBKEY is not set.</div>;
+}
+
+function IntentActionButton({
+  approvalLabel,
+  className,
+  formReady,
+  invalidLabel,
+  needsApproval,
+  onApprove,
+  onSubmit,
+  protocol,
+  readyLabel,
+}: {
+  approvalLabel: string;
+  className: "btn-primary" | "btn-warn";
+  formReady: boolean;
+  invalidLabel: string;
+  needsApproval: boolean;
+  onApprove: () => void;
+  onSubmit: () => void;
+  protocol: ProtocolState;
+  readyLabel: string;
+}) {
+  return (
+    <ConnectButton.Custom>
+      {({ account, chain, mounted, openChainModal, openConnectModal, authenticationStatus }) => {
+        const ready = mounted && authenticationStatus !== "loading";
+        const connected = ready && account && chain && (!authenticationStatus || authenticationStatus === "authenticated");
+        const wrongChain = connected && (chain.unsupported || chain.id !== publicEnv.chainId);
+
+        if (!connected) {
+          return (
+            <button type="button" className={`btn ${className} intent-submit`} onClick={openConnectModal}>
+              Connect wallet
+            </button>
+          );
+        }
+
+        if (wrongChain) {
+          return (
+            <button type="button" className="btn btn-warn intent-submit" onClick={openChainModal}>
+              Switch to {publicEnv.networkName}
+            </button>
+          );
+        }
+
+        if (!formReady) {
+          return (
+            <button type="button" className={`btn ${className} intent-submit`} disabled>
+              {invalidLabel}
+            </button>
+          );
+        }
+
+        return (
+          <button type="button" className={`btn ${needsApproval ? "btn-ghost" : className} intent-submit`} onClick={needsApproval ? onApprove : onSubmit} disabled={protocol.actionPending}>
+            {protocol.actionPending ? protocol.actionLabel : needsApproval ? approvalLabel : readyLabel}
+          </button>
+        );
+      }}
+    </ConnectButton.Custom>
+  );
+}
+
+function BorrowRiskPanel({ risk }: { risk: BorrowRisk }) {
+  const displayLtv = Number.isFinite(risk.ltv) ? `${risk.ltv.toFixed(1)}%` : "Enter amounts";
+  const displayHealth = Number.isFinite(risk.healthRatio) ? risk.healthRatio.toFixed(2) : "—";
+  const displayLiquidation = `${CENTRALIZED_LIQUIDATION_LTV}% LTV`;
+
+  return (
+    <div className={`risk-panel risk-${risk.tone}`}>
+      <div className="risk-head">
+        <div>
+          <span className="risk-k">Health ratio</span>
+          <strong>{displayHealth}</strong>
+        </div>
+        <span className="risk-badge">{risk.label}</span>
+      </div>
+      <div className="risk-track" aria-label="Borrow health indicator">
+        <div className="risk-fill" style={{ width: `${risk.fill}%` }} />
+      </div>
+      <div className="risk-stats">
+        <div>
+          <span>Current LTV</span>
+          <strong>{displayLtv}</strong>
+        </div>
+        <div>
+          <span>Liquidation</span>
+          <strong>{displayLiquidation}</strong>
+        </div>
+        <div>
+          <span>WETH price</span>
+          <strong>${WETH_REFERENCE_PRICE_USD.toLocaleString()}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type BorrowRisk = {
+  fill: number;
+  healthRatio: number;
+  label: string;
+  ltv: number;
+  tone: "empty" | "safe" | "watch" | "danger";
+};
+
+function calculateBorrowRisk({
+  borrowAmount,
+  collateralAmount,
+}: {
+  borrowAmount: string;
+  collateralAmount: string;
+}): BorrowRisk {
+  const debt = parseFiniteNumber(borrowAmount);
+  const collateral = parseFiniteNumber(collateralAmount);
+  const threshold = CENTRALIZED_LIQUIDATION_LTV;
+
+  if (!debt || !collateral || !threshold) {
+    return { fill: 0, healthRatio: Number.NaN, label: "Awaiting input", ltv: Number.NaN, tone: "empty" };
+  }
+
+  const collateralValue = collateral * WETH_REFERENCE_PRICE_USD;
+  const ltv = (debt / collateralValue) * 100;
+  const healthRatio = threshold / ltv;
+  const fill = clamp((healthRatio / 2) * 100, 8, 100);
+
+  if (healthRatio <= 1) {
+    return { fill, healthRatio, label: "Liquidation risk", ltv, tone: "danger" };
+  }
+
+  if (healthRatio <= 1.25) {
+    return { fill, healthRatio, label: "Watch closely", ltv, tone: "watch" };
+  }
+
+  return { fill, healthRatio, label: "Healthy", ltv, tone: "safe" };
+}
+
+function parseFiniteNumber(value: string) {
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.NaN;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function DashboardPage({
   active,
-  connected,
+  protocol,
   refreshing,
   onRefresh,
 }: {
   active: boolean;
-  connected: boolean;
+  protocol: ProtocolState;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
+  const pendingProposals = protocol.proposals.filter((proposal) => !proposal.settledOnChain && (proposal.status ?? "pending") === "pending");
+  const connectionLabel = protocol.isConnected ? formatAddress(protocol.address) : "Not connected";
+
   return (
     <section className={`page${active ? " on" : ""}`} id="p-dashboard">
       <div className="ph">
@@ -317,30 +672,151 @@ function DashboardPage({
         <h1 className="ph-title">
           Your <em>positions</em>
         </h1>
-        <p className="ph-sub">Connect your wallet to see live loans. Below is an example of what you’ll see.</p>
+        <p className="ph-sub">Live backend intents, signed proposals, and on-chain PrivaLendPool loans for the connected Sepolia wallet.</p>
       </div>
       <div className="ebar">
         <div className="ec">
-          <div className="ek">Connection</div>
+          <div className="ek">Wallet</div>
           <div className="ev" id="dash-conn">
-            {connected ? "Wallet connected (demo)" : "Not connected"}
+            {connectionLabel}
           </div>
         </div>
         <div className="ec">
-          <div className="ek">Matching</div>
-          <div className="ev match-pulse">Live</div>
+          <div className="ek">Last poll</div>
+          <div className="ev">{protocol.lastPollAt ? new Date(protocol.lastPollAt).toLocaleTimeString() : "-"}</div>
         </div>
-        <div className="ec" style={{ display: "flex", alignItems: "center" }}>
-          <button type="button" className="btn btn-ghost btn-sm" id="dash-refresh" onClick={onRefresh}>
-            {refreshing ? "Refreshing…" : "Refresh"}
+        <div className="ec action-cell">
+          <button type="button" className="btn btn-ghost btn-sm" id="dash-refresh" onClick={onRefresh} disabled={refreshing || protocol.actionPending}>
+            {refreshing ? "Refreshing..." : "Refresh"}
           </button>
+          {publicEnv.demoTickEnabled && (
+            <button type="button" className="btn btn-warn btn-sm" onClick={() => void protocol.runDemoTick()} disabled={protocol.actionPending}>
+              Demo tick
+            </button>
+          )}
         </div>
       </div>
-      <div className="tshell">
-        <div className="th">
-          <span>Your loans</span>
-          <span style={{ fontSize: "12px", color: "var(--dim)" }}>Sample data</span>
+      {protocol.lastError && (
+        <div className="mini-alert mini-alert-warn error-row">
+          <span>{protocol.lastError}</span>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={protocol.clearError}>
+            Dismiss
+          </button>
         </div>
+      )}
+      <IntentTable protocol={protocol} />
+      <ProposalTable proposals={pendingProposals} protocol={protocol} />
+      <LoanTable loans={protocol.loans} protocol={protocol} />
+      <p className="help">
+        <strong style={{ color: "var(--text)" }}>Repay</strong> returns principal to the pool for lender claims. <strong style={{ color: "var(--text)" }}>Withdraw</strong> pulls a lender’s
+        claimable repayment. <strong style={{ color: "var(--text)" }}>Close</strong> returns collateral after full repayment.
+      </p>
+    </section>
+  );
+}
+
+function IntentTable({ protocol }: { protocol: ProtocolState }) {
+  return (
+    <div className="tshell">
+      <div className="th">
+        <span>Backend intents</span>
+        <span style={{ fontSize: "12px", color: "var(--dim)" }}>{protocol.postedIntents.length ? "Session wallet" : "None yet"}</span>
+      </div>
+      {protocol.postedIntents.length === 0 ? (
+        <EmptyState label="Submit a lend offer or borrow request to see the backend intent here." />
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl compact-tbl">
+            <thead>
+              <tr>
+                <th>Intent</th>
+                <th>Side</th>
+                <th>Amount</th>
+                <th>Private rate</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {protocol.postedIntents.map((intent) => (
+                <tr key={intent.intentId}>
+                  <td className="mn">{shortId(intent.intentId)}</td>
+                  <td>
+                    <RoleBadge role={intent.side === "lend" ? "lender" : "borrower"} />
+                  </td>
+                  <td className="mn">{formatTokenAmount(BigInt(intent.amount), protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
+                  <td className="mn">{formatRateFraction(intent.rate)}</td>
+                  <td>
+                    <StatusBadge label={intentDisplayStatus(intent, protocol)} status={intentDisplayStatus(intent, protocol) === "Waiting" ? "pending" : "active"} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProposalTable({ proposals, protocol }: { proposals: RelevantProposal[]; protocol: ProtocolState }) {
+  return (
+    <div className="tshell">
+      <div className="th">
+        <span>Signed proposals</span>
+        <span style={{ fontSize: "12px", color: "var(--dim)" }}>{proposals.length ? "Pending settlement" : "No pending matches"}</span>
+      </div>
+      {proposals.length === 0 ? (
+        <EmptyState label="Matched signed proposals involving this wallet will appear before settlement." />
+      ) : (
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Proposal</th>
+                <th>You are</th>
+                <th>Principal</th>
+                <th>Rate</th>
+                <th>Collateral</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {proposals.map((proposal) => (
+                <tr key={proposal.proposalId}>
+                  <td className="mn">{shortId(proposal.proposalId)}</td>
+                  <td>{protocol.address && <RoleBadge role={proposalRole(proposal, protocol.address)} />}</td>
+                  <td className="mn">{formatTokenAmount(BigInt(proposal.principal), protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
+                  <td className="mn">{formatRateFraction(proposal.effectiveBorrowerRate)}</td>
+                  <td className="mn">{formatTokenAmount(BigInt(proposal.collateralAmount), protocol.collateralToken.decimals, protocol.collateralToken.symbol)}</td>
+                  <td>
+                    <StatusBadge label={proposal.settledOnChain ? "Settled" : "Pending settlement"} status={proposal.settledOnChain ? "active" : "pending"} />
+                  </td>
+                  <td>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void protocol.settleProposal(proposal)} disabled={proposal.settledOnChain || protocol.actionPending}>
+                      Settle fallback
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LoanTable({ loans, protocol }: { loans: PoolLoan[]; protocol: ProtocolState }) {
+  return (
+    <div className="tshell">
+      <div className="th">
+        <span>On-chain loans</span>
+        <span style={{ fontSize: "12px", color: "var(--dim)" }}>PrivaLendPool reads</span>
+      </div>
+      {loans.length === 0 ? (
+        <EmptyState label="Settled loans for this wallet will replace the old sample rows here." />
+      ) : (
         <div className="tbl-scroll">
           <table className="tbl">
             <thead>
@@ -352,112 +828,140 @@ function DashboardPage({
                 <th>Rate</th>
                 <th>Health</th>
                 <th>Status</th>
-                <th>Due</th>
+                <th>Claimable</th>
                 <th>Action</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td className="mn">#12</td>
-                <td>
-                  <span className="badge b-b">Borrower</span>
-                </td>
-                <td className="mn">5,000 USDC</td>
-                <td className="mn">3.2 WETH</td>
-                <td className="mn">6.4%</td>
-                <td>
-                  <div className="hbar">
-                    <div className="htrack">
-                      <div className="hfill" style={{ width: "72%" }} />
-                    </div>
-                    <span className="hval" style={{ color: "var(--ok)" }}>
-                      1.7×
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <span className="badge b-a">Active</span>
-                </td>
-                <td className="mn" style={{ fontSize: "13px" }}>
-                  Jun 9
-                </td>
-                <td>
-                  <button type="button" className="btn btn-ghost btn-sm">
-                    Repay
-                  </button>
-                </td>
-              </tr>
-              <tr>
-                <td className="mn">#7</td>
-                <td>
-                  <span className="badge b-l">Lender</span>
-                </td>
-                <td className="mn">2,500 USDC</td>
-                <td className="mn">—</td>
-                <td className="mn">5.8%</td>
-                <td>
-                  <div className="hbar">
-                    <div className="htrack">
-                      <div className="hfill low" style={{ width: "35%" }} />
-                    </div>
-                    <span className="hval" style={{ color: "var(--bad)" }}>
-                      Low
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <span className="badge b-r">At risk</span>
-                </td>
-                <td className="mn" style={{ fontSize: "13px" }}>
-                  Jun 12
-                </td>
-                <td>
-                  <button type="button" className="btn btn-danger btn-sm">
-                    Liquidate
-                  </button>
-                </td>
-              </tr>
-              <tr>
-                <td className="mn">#3</td>
-                <td>
-                  <span className="badge b-l">Lender</span>
-                </td>
-                <td className="mn">10,000 USDC</td>
-                <td className="mn">—</td>
-                <td className="mn">7.1%</td>
-                <td>
-                  <div className="hbar">
-                    <div className="htrack">
-                      <div className="hfill" style={{ width: "85%" }} />
-                    </div>
-                    <span className="hval" style={{ color: "var(--ok)" }}>
-                      2.2×
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <span className="badge b-a">Active</span>
-                </td>
-                <td className="mn" style={{ fontSize: "13px" }}>
-                  Jul 1
-                </td>
-                <td>
-                  <button type="button" className="btn btn-primary btn-sm">
-                    Claim
-                  </button>
-                </td>
-              </tr>
+              {loans.map((loan) => (
+                <tr key={loan.loanId.toString()}>
+                  <td className="mn">#{loan.loanId.toString()}</td>
+                  <td>
+                    <RoleBadge role={loan.role} />
+                  </td>
+                  <td className="mn">{formatTokenAmount(loan.outstandingPrincipal, protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
+                  <td className="mn">{formatTokenAmount(loan.collateralAmount, protocol.collateralToken.decimals, protocol.collateralToken.symbol)}</td>
+                  <td className="mn">{formatRateWad(loan.effectiveBorrowerRate)}</td>
+                  <td>
+                    <LoanHealth loan={loan} debtDecimals={protocol.debtToken.decimals} collateralDecimals={protocol.collateralToken.decimals} />
+                  </td>
+                  <td>
+                    <StatusBadge label={loanStatusLabel(loan.status)} status={loan.status === 1 ? "active" : "settled"} />
+                  </td>
+                  <td className="mn">{formatTokenAmount(loan.lenderClaimable, protocol.debtToken.decimals, protocol.debtToken.symbol)}</td>
+                  <td>
+                    <LoanActions loan={loan} protocol={protocol} />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
-      </div>
-      <p className="help">
-        <strong style={{ color: "var(--text)" }}>Repay</strong> pays down your debt. <strong style={{ color: "var(--text)" }}>Claim</strong> pulls your share of repayments as a lender.{" "}
-        <strong style={{ color: "var(--text)" }}>Liquidate</strong> is available to others if a loan is below its required safety — it repays part of the debt and takes collateral with a
-        small incentive.
-      </p>
-    </section>
+      )}
+    </div>
   );
+}
+
+function LoanActions({ loan, protocol }: { loan: PoolLoan; protocol: ProtocolState }) {
+  const actions: ReactNode[] = [];
+
+  if ((loan.role === "borrower" || loan.role === "both") && loan.status === 1) {
+    const needsRepayApproval = protocol.debtToken.allowance < loan.outstandingPrincipal;
+    actions.push(
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        onClick={() => void (needsRepayApproval ? protocol.approveDebt(loan.outstandingPrincipal) : protocol.repay(loan))}
+        disabled={protocol.actionPending}
+        key="repay"
+      >
+        {needsRepayApproval ? "Approve repay" : "Repay"}
+      </button>,
+    );
+  }
+
+  if ((loan.role === "borrower" || loan.role === "both") && loan.status === 2 && loan.collateralAmount > 0n) {
+    actions.push(
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => void protocol.closePosition(loan)} disabled={protocol.actionPending} key="close">
+        Close
+      </button>,
+    );
+  }
+
+  if ((loan.role === "lender" || loan.role === "both") && loan.lenderClaimable > 0n) {
+    actions.push(
+      <button type="button" className="btn btn-primary btn-sm" onClick={() => void protocol.withdrawClaim(loan)} disabled={protocol.actionPending} key="claim">
+        Withdraw
+      </button>,
+    );
+  }
+
+  if (actions.length === 0) return <span className="muted-action">Awaiting repayment</span>;
+  return <div className="action-stack">{actions}</div>;
+}
+
+function LoanHealth({ loan, debtDecimals, collateralDecimals }: { loan: PoolLoan; debtDecimals: number; collateralDecimals: number }) {
+  if (loan.collateralAmount === 0n || loan.outstandingPrincipal === 0n) {
+    return <span className="hval">-</span>;
+  }
+
+  const debt = Number(formatBaseUnits(loan.outstandingPrincipal, debtDecimals, 8));
+  const collateral = Number(formatBaseUnits(loan.collateralAmount, collateralDecimals, 8));
+  const collateralValue = collateral * WETH_REFERENCE_PRICE_USD;
+  const ltv = collateralValue > 0 ? (debt / collateralValue) * 100 : Number.NaN;
+  const health = Number.isFinite(ltv) && ltv > 0 ? CENTRALIZED_LIQUIDATION_LTV / ltv : Number.NaN;
+  const fill = Number.isFinite(health) ? clamp((health / 2) * 100, 8, 100) : 0;
+
+  return (
+    <div className="hbar">
+      <div className="htrack">
+        <div className={`hfill${health <= 1.25 ? " low" : ""}`} style={{ width: `${fill}%` }} />
+      </div>
+      <span className="hval" style={{ color: health <= 1.25 ? "var(--bad)" : "var(--ok)" }}>
+        {Number.isFinite(health) ? `${health.toFixed(2)}x` : "-"}
+      </span>
+    </div>
+  );
+}
+
+function RoleBadge({ role }: { role: "borrower" | "lender" | "both" }) {
+  if (role === "both") return <span className="badge b-a">Both</span>;
+  return <span className={`badge ${role === "borrower" ? "b-b" : "b-l"}`}>{role === "borrower" ? "Borrower" : "Lender"}</span>;
+}
+
+function StatusBadge({ label, status }: { label: string; status: "active" | "pending" | "settled" }) {
+  return <span className={`badge ${status === "active" ? "b-a" : status === "pending" ? "b-b" : "b-l"}`}>{label}</span>;
+}
+
+function EmptyState({ label }: { label: string }) {
+  return <div className="empty-state">{label}</div>;
+}
+
+function intentDisplayStatus(intent: import("@/lib/api").PostedIntent, protocol: ProtocolState) {
+  const proposal = protocol.proposals.find((item) =>
+    intent.side === "borrow" ? item.borrowIntentId === intent.intentId : item.matchedTicks.some((tick) => tick.lendIntentId === intent.intentId),
+  );
+  if (!proposal) return "Waiting";
+  return proposal.settledOnChain ? "Settled" : "Matched";
+}
+
+function loanStatusLabel(status: PoolLoan["status"]) {
+  if (status === 1) return "Active";
+  if (status === 2) return "Repaid";
+  return "None";
+}
+
+function shortId(value: string) {
+  return value.length <= 12 ? value : `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function formatAddress(address?: Address) {
+  if (!address) return "Wallet connected";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatBalancePortion(token: ProtocolState["debtToken"], percent: 25 | 50 | 75 | 100) {
+  return formatBaseUnits((token.balance * BigInt(percent)) / 100n, token.decimals, token.decimals);
 }
 
 function PrivaLendLogo() {

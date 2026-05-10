@@ -31,8 +31,8 @@ contract MatchingCoordinatorTest is Test {
         core.setCoordinator(address(coordinator), true);
         coordinator.setMatcher(matcher, true);
 
-        debt = new MockERC20(6);
-        collateral = new MockERC20(6);
+        debt = new MockERC20("Mock USDC", "USDC", 6);
+        collateral = new MockERC20("Mock USDC", "USDC", 6);
         debt.mint(lenderA, 1_000e6);
         debt.mint(lenderB, 1_000e6);
         collateral.mint(borrower, 2_000e6);

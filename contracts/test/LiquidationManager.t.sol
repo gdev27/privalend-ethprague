@@ -36,8 +36,8 @@ contract LiquidationManagerTest is Test {
         core.setCoordinator(coordinator, true);
         core.setLiquidationManager(address(liquidationManager), true);
 
-        debt = new MockERC20(6);
-        collateral = new MockERC20(6);
+        debt = new MockERC20("Mock USDC", "USDC", 6);
+        collateral = new MockERC20("Mock USDC", "USDC", 6);
         debtFeed = new MockChainlinkFeed(8);
         collateralFeed = new MockChainlinkFeed(8);
         debtFeed.setAnswer(1e8, block.timestamp);
@@ -116,8 +116,8 @@ contract LiquidationManagerTest is Test {
     }
 
     function testDecimalMismatchAndRoundingProducesNonZeroSeizure() public {
-        MockERC20 debt18 = new MockERC20(18);
-        MockERC20 collateral6 = new MockERC20(6);
+        MockERC20 debt18 = new MockERC20("Mock WETH", "WETH", 18);
+        MockERC20 collateral6 = new MockERC20("Mock USDC", "USDC", 6);
         MockChainlinkFeed debt18Feed = new MockChainlinkFeed(8);
         MockChainlinkFeed collateral6Feed = new MockChainlinkFeed(8);
         debt18Feed.setAnswer(1e8, block.timestamp);
@@ -164,8 +164,8 @@ contract LiquidationManagerTest is Test {
     }
 
     function testRejectsTinyRepayThatRoundsToZeroSeizure() public {
-        MockERC20 debt18 = new MockERC20(18);
-        MockERC20 collateral6 = new MockERC20(6);
+        MockERC20 debt18 = new MockERC20("Mock WETH", "WETH", 18);
+        MockERC20 collateral6 = new MockERC20("Mock USDC", "USDC", 6);
         MockChainlinkFeed debt18Feed = new MockChainlinkFeed(8);
         MockChainlinkFeed collateral6Feed = new MockChainlinkFeed(8);
         debt18Feed.setAnswer(1e8, block.timestamp);
