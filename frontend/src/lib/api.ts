@@ -88,12 +88,14 @@ export class ApiRequestError extends Error {
 }
 
 export async function postLendIntent(input: {
+  intentId: Hex;
   lenderAddress: Address;
   tokenAddress: Address;
   amount: bigint;
   encryptedRate: string;
 }) {
   return postJson<{ intent: BackendLendIntent }>("/api/v1/lend-intent", {
+    intentId: input.intentId,
     userId: input.lenderAddress.toLowerCase(),
     token: input.tokenAddress.toLowerCase(),
     amount: input.amount.toString(),
@@ -102,6 +104,7 @@ export async function postLendIntent(input: {
 }
 
 export async function postBorrowIntent(input: {
+  intentId: Hex;
   borrowerAddress: Address;
   tokenAddress: Address;
   amount: bigint;
@@ -110,6 +113,7 @@ export async function postBorrowIntent(input: {
   collateralAmount: bigint;
 }) {
   return postJson<{ intent: BackendBorrowIntent }>("/api/v1/borrow-intent", {
+    intentId: input.intentId,
     borrower: input.borrowerAddress.toLowerCase(),
     token: input.tokenAddress.toLowerCase(),
     amount: input.amount.toString(),

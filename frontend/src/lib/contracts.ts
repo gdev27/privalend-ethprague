@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Address, Hex, PublicClient } from "viem";
-import { zeroAddress } from "viem";
+import { decodeEventLog, zeroAddress } from "viem";
 import { useAccount, useChainId, usePublicClient, useReadContracts, useSwitchChain, useWriteContract } from "wagmi";
-import { erc20Abi, privaLendPoolAbi } from "./abis";
+import { erc20Abi, intentRegistryAbi, loanCoreAbi, positionManagerAbi } from "./abis";
 import {
   FALLBACK_COLLATERAL_DECIMALS,
   FALLBACK_DEBT_DECIMALS,
@@ -20,7 +20,7 @@ import {
 } from "./api";
 import { encryptRateFraction, type RateEncryptionMode } from "./encryption";
 import { publicEnv } from "./env";
-import { proposalInvolvesAddress, proposalToSettleArgs, stringIdToBytes32 } from "./proposals";
+import { proposalInvolvesAddress } from "./proposals";
 
 export type TokenState = {
   address: Address;
@@ -31,7 +31,7 @@ export type TokenState = {
   symbol: string;
 };
 
-export type PoolLoanStatus = 0 | 1 | 2;
+export type PoolLoanStatus = 0 | 1 | 2 | 3 | 4;
 
 export type PoolLoan = {
   borrower: Address;
@@ -57,12 +57,14 @@ export type RelevantProposal = SignedProposal & {
 
 export type SubmitLendInput = {
   amount: bigint;
+  durationDays: number;
   minimumRate: number;
 };
 
 export type SubmitBorrowInput = {
   amount: bigint;
   collateralAmount: bigint;
+  durationDays: number;
   maxRate: number;
 };
 
@@ -100,16 +102,23 @@ export type ProtocolState = {
 
 type PoolLoanTuple = {
   id: bigint;
-  proposalIdHash: Hex;
   borrower: Address;
   token: Address;
   collateralToken: Address;
   principal: bigint;
   outstandingPrincipal: bigint;
   collateralAmount: bigint;
-  effectiveBorrowerRate: bigint;
+  weightedRateBps: bigint;
+  minCollateralRatioBps: bigint;
+  startTimestamp: bigint;
+  dueTimestamp: bigint;
   status: number;
 };
+
+const ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
+const INTENT_SIDE_LEND = 0;
+const INTENT_SIDE_BORROW = 1;
+const DEFAULT_MIN_COLLATERAL_RATIO_BPS = 13_000n;
 
 const emptyToken = (address: Address, symbol: string, decimals: number): TokenState => ({
   address,
@@ -144,11 +153,11 @@ export function usePrivaLendProtocol(): ProtocolState {
       { address: publicEnv.debtTokenAddress, abi: erc20Abi, functionName: "decimals" },
       { address: publicEnv.debtTokenAddress, abi: erc20Abi, functionName: "symbol" },
       { address: publicEnv.debtTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: [address ?? zeroAddress] },
-      { address: publicEnv.debtTokenAddress, abi: erc20Abi, functionName: "allowance", args: [address ?? zeroAddress, publicEnv.poolAddress] },
+      { address: publicEnv.debtTokenAddress, abi: erc20Abi, functionName: "allowance", args: [address ?? zeroAddress, publicEnv.loanCoreAddress] },
       { address: publicEnv.collateralTokenAddress, abi: erc20Abi, functionName: "decimals" },
       { address: publicEnv.collateralTokenAddress, abi: erc20Abi, functionName: "symbol" },
       { address: publicEnv.collateralTokenAddress, abi: erc20Abi, functionName: "balanceOf", args: [address ?? zeroAddress] },
-      { address: publicEnv.collateralTokenAddress, abi: erc20Abi, functionName: "allowance", args: [address ?? zeroAddress, publicEnv.poolAddress] },
+      { address: publicEnv.collateralTokenAddress, abi: erc20Abi, functionName: "allowance", args: [address ?? zeroAddress, publicEnv.loanCoreAddress] },
     ],
     query: {
       enabled: Boolean(address && isCorrectChain),
@@ -221,12 +230,6 @@ export function usePrivaLendProtocol(): ProtocolState {
       setBackendReachable(true);
       setLastPollAt(Date.now());
       setProposals(data.proposals);
-
-      if (address && publicClient) {
-        const relevant = data.proposals.filter((proposal) => proposalInvolvesAddress(proposal, address));
-        const states = await fetchProposalSettlementStates(publicClient as PublicClient, relevant);
-        setSettlementState(states);
-      }
     } catch (error) {
       setBackendReachable(false);
       setLastError(errorMessage(error));
@@ -240,12 +243,12 @@ export function usePrivaLendProtocol(): ProtocolState {
     }
 
     try {
-      const nextLoans = await fetchSignedPoolLoans(publicClient as PublicClient, address, proposals);
+      const nextLoans = await fetchModularLoans(publicClient as PublicClient, address);
       setLoans(nextLoans);
     } catch (error) {
       setLastError(errorMessage(error));
     }
-  }, [address, isCorrectChain, proposals, publicClient]);
+  }, [address, isCorrectChain, publicClient]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([tokenReads.refetch(), refreshProposals(), refreshLoans()]);
@@ -280,7 +283,7 @@ export function usePrivaLendProtocol(): ProtocolState {
           address: publicEnv.debtTokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [publicEnv.poolAddress, amount],
+          args: [publicEnv.loanCoreAddress, amount],
           chainId: publicEnv.chainId,
         });
         await waitForReceipt(publicClient as PublicClient | undefined, hash);
@@ -297,7 +300,7 @@ export function usePrivaLendProtocol(): ProtocolState {
           address: publicEnv.collateralTokenAddress,
           abi: erc20Abi,
           functionName: "approve",
-          args: [publicEnv.poolAddress, amount],
+          args: [publicEnv.loanCoreAddress, amount],
           chainId: publicEnv.chainId,
         });
         await waitForReceipt(publicClient as PublicClient | undefined, hash);
@@ -308,12 +311,26 @@ export function usePrivaLendProtocol(): ProtocolState {
   );
 
   const submitLend = useCallback(
-    async ({ amount, minimumRate }: SubmitLendInput) => {
+    async ({ amount, durationDays, minimumRate }: SubmitLendInput) => {
       if (!address) throw new Error("Connect a lender wallet first");
 
       await runWalletAction("Submitting lend offer", async () => {
         const encrypted = await encryptRateFraction(minimumRate);
+        const intentId = await postOnChainIntent({
+          address: publicEnv.intentRegistryAddress,
+          chainId: publicEnv.chainId,
+          collateralToken: publicEnv.collateralTokenAddress,
+          durationDays,
+          maxAmount: amount,
+          minCollateralRatioBps: 0n,
+          publicClient: publicClient as PublicClient | undefined,
+          rateBps: rateFractionToBps(minimumRate),
+          side: INTENT_SIDE_LEND,
+          token: publicEnv.debtTokenAddress,
+          writeContractAsync,
+        });
         const { intent } = await postLendIntent({
+          intentId,
           lenderAddress: address,
           tokenAddress: publicEnv.debtTokenAddress,
           amount,
@@ -330,16 +347,30 @@ export function usePrivaLendProtocol(): ProtocolState {
         await refreshProposals();
       }, setActionLabel, setLastError);
     },
-    [address, refreshProposals],
+    [address, publicClient, refreshProposals, writeContractAsync],
   );
 
   const submitBorrow = useCallback(
-    async ({ amount, collateralAmount, maxRate }: SubmitBorrowInput) => {
+    async ({ amount, collateralAmount, durationDays, maxRate }: SubmitBorrowInput) => {
       if (!address) throw new Error("Connect a borrower wallet first");
 
       await runWalletAction("Submitting borrow request", async () => {
         const encrypted = await encryptRateFraction(maxRate);
+        const intentId = await postOnChainIntent({
+          address: publicEnv.intentRegistryAddress,
+          chainId: publicEnv.chainId,
+          collateralToken: publicEnv.collateralTokenAddress,
+          durationDays,
+          maxAmount: amount,
+          minCollateralRatioBps: DEFAULT_MIN_COLLATERAL_RATIO_BPS,
+          publicClient: publicClient as PublicClient | undefined,
+          rateBps: rateFractionToBps(maxRate),
+          side: INTENT_SIDE_BORROW,
+          token: publicEnv.debtTokenAddress,
+          writeContractAsync,
+        });
         const { intent } = await postBorrowIntent({
+          intentId,
           borrowerAddress: address,
           tokenAddress: publicEnv.debtTokenAddress,
           amount,
@@ -358,32 +389,23 @@ export function usePrivaLendProtocol(): ProtocolState {
         await refreshProposals();
       }, setActionLabel, setLastError);
     },
-    [address, refreshProposals],
+    [address, publicClient, refreshProposals, writeContractAsync],
   );
 
   const settleProposal = useCallback(
     async (proposal: SignedProposal) => {
-      await runWalletAction("Settling match", async () => {
-        const hash = await writeContractAsync({
-          address: publicEnv.poolAddress,
-          abi: privaLendPoolAbi,
-          functionName: "settleMatch",
-          args: proposalToSettleArgs(proposal),
-          chainId: publicEnv.chainId,
-        });
-        await waitForReceipt(publicClient as PublicClient | undefined, hash);
-        await refreshAll();
-      }, setActionLabel, setLastError);
+      void proposal;
+      throw new Error("Modular matches are settled by the executor after backend matching.");
     },
-    [publicClient, refreshAll, writeContractAsync],
+    [],
   );
 
   const repay = useCallback(
     async (loan: PoolLoan, amount = loan.outstandingPrincipal) => {
       await runWalletAction("Repaying loan", async () => {
         const hash = await writeContractAsync({
-          address: publicEnv.poolAddress,
-          abi: privaLendPoolAbi,
+          address: publicEnv.positionManagerAddress,
+          abi: positionManagerAbi,
           functionName: "repay",
           args: [loan.loanId, amount],
           chainId: publicEnv.chainId,
@@ -399,8 +421,8 @@ export function usePrivaLendProtocol(): ProtocolState {
     async (loan: PoolLoan) => {
       await runWalletAction("Withdrawing claim", async () => {
         const hash = await writeContractAsync({
-          address: publicEnv.poolAddress,
-          abi: privaLendPoolAbi,
+          address: publicEnv.loanCoreAddress,
+          abi: loanCoreAbi,
           functionName: "withdrawClaim",
           args: [loan.loanId],
           chainId: publicEnv.chainId,
@@ -416,8 +438,8 @@ export function usePrivaLendProtocol(): ProtocolState {
     async (loan: PoolLoan) => {
       await runWalletAction("Closing position", async () => {
         const hash = await writeContractAsync({
-          address: publicEnv.poolAddress,
-          abi: privaLendPoolAbi,
+          address: publicEnv.positionManagerAddress,
+          abi: positionManagerAbi,
           functionName: "closePosition",
           args: [loan.loanId],
           chainId: publicEnv.chainId,
@@ -469,27 +491,11 @@ export function usePrivaLendProtocol(): ProtocolState {
   };
 }
 
-export async function fetchProposalSettlementStates(publicClient: PublicClient, proposals: SignedProposal[]) {
-  const entries = await Promise.all(
-    proposals.map(async (proposal) => {
-      const settled = (await publicClient.readContract({
-        address: publicEnv.poolAddress,
-        abi: privaLendPoolAbi,
-        functionName: "consumedProposalHash",
-        args: [proposal.proposalHash],
-      })) as boolean;
-      return [proposal.proposalId, settled] as const;
-    }),
-  );
-
-  return Object.fromEntries(entries);
-}
-
-export async function fetchSignedPoolLoans(publicClient: PublicClient, address: Address, proposals: SignedProposal[]): Promise<PoolLoan[]> {
+export async function fetchModularLoans(publicClient: PublicClient, address: Address): Promise<PoolLoan[]> {
   const normalizedAddress = address.toLowerCase();
   const nextLoanId = (await publicClient.readContract({
-    address: publicEnv.poolAddress,
-    abi: privaLendPoolAbi,
+    address: publicEnv.loanCoreAddress,
+    abi: loanCoreAbi,
     functionName: "nextLoanId",
   })) as bigint;
 
@@ -497,8 +503,8 @@ export async function fetchSignedPoolLoans(publicClient: PublicClient, address: 
   const loans: Array<PoolLoan | null> = await Promise.all(
     loanIds.map(async (loanId) => {
       const loan = (await publicClient.readContract({
-        address: publicEnv.poolAddress,
-        abi: privaLendPoolAbi,
+        address: publicEnv.loanCoreAddress,
+        abi: loanCoreAbi,
         functionName: "getLoan",
         args: [loanId],
       })) as PoolLoanTuple;
@@ -506,8 +512,8 @@ export async function fetchSignedPoolLoans(publicClient: PublicClient, address: 
       if (loan.status === 0) return null;
 
       const lenders = (await publicClient.readContract({
-        address: publicEnv.poolAddress,
-        abi: privaLendPoolAbi,
+        address: publicEnv.loanCoreAddress,
+        abi: loanCoreAbi,
         functionName: "getLoanLenders",
         args: [loanId],
       })) as Address[];
@@ -519,37 +525,32 @@ export async function fetchSignedPoolLoans(publicClient: PublicClient, address: 
       const [lenderPrincipal, lenderClaimable] = isLender
         ? await Promise.all([
             publicClient.readContract({
-              address: publicEnv.poolAddress,
-              abi: privaLendPoolAbi,
+              address: publicEnv.loanCoreAddress,
+              abi: loanCoreAbi,
               functionName: "lenderPrincipalByLoan",
               args: [loanId, address],
             }) as Promise<bigint>,
             publicClient.readContract({
-              address: publicEnv.poolAddress,
-              abi: privaLendPoolAbi,
+              address: publicEnv.loanCoreAddress,
+              abi: loanCoreAbi,
               functionName: "lenderClaimableByLoan",
               args: [loanId, address],
             }) as Promise<bigint>,
           ])
         : [0n, 0n];
 
-      const matchedProposal = proposals.find(
-        (proposal) => stringIdToBytes32(proposal.proposalId).toLowerCase() === loan.proposalIdHash.toLowerCase(),
-      );
-
       const mappedLoan: PoolLoan = {
         borrower: loan.borrower,
         collateralAmount: loan.collateralAmount,
         collateralToken: loan.collateralToken,
-        effectiveBorrowerRate: loan.effectiveBorrowerRate,
+        effectiveBorrowerRate: bpsToWad(loan.weightedRateBps),
         lenderClaimable,
         lenderPrincipal,
         lenders,
         loanId,
-        matchedProposal,
         outstandingPrincipal: loan.outstandingPrincipal,
         principal: loan.principal,
-        proposalIdHash: loan.proposalIdHash,
+        proposalIdHash: ZERO_BYTES32,
         role: isBorrower && isLender ? "both" : isBorrower ? "borrower" : "lender",
         status: loan.status as PoolLoanStatus,
         token: loan.token,
@@ -587,9 +588,72 @@ function readTokenState({
   };
 }
 
+async function postOnChainIntent({
+  address,
+  chainId,
+  collateralToken,
+  durationDays,
+  maxAmount,
+  minCollateralRatioBps,
+  publicClient,
+  rateBps,
+  side,
+  token,
+  writeContractAsync,
+}: {
+  address: Address;
+  chainId: number;
+  collateralToken: Address;
+  durationDays: number;
+  maxAmount: bigint;
+  minCollateralRatioBps: bigint;
+  publicClient: PublicClient | undefined;
+  rateBps: bigint;
+  side: typeof INTENT_SIDE_LEND | typeof INTENT_SIDE_BORROW;
+  token: Address;
+  writeContractAsync: ReturnType<typeof useWriteContract>["writeContractAsync"];
+}): Promise<Hex> {
+  const expiry = BigInt(Math.floor(Date.now() / 1000) + Math.max(1, Math.ceil(durationDays)) * 24 * 60 * 60);
+  const hash = await writeContractAsync({
+    address,
+    abi: intentRegistryAbi,
+    functionName: "postIntent",
+    args: [side, token, collateralToken, maxAmount, rateBps, minCollateralRatioBps, expiry],
+    chainId,
+  });
+  const receipt = await waitForReceipt(publicClient, hash);
+  return extractPostedIntentId(receipt.logs);
+}
+
+function extractPostedIntentId(logs: Array<{ data: Hex; topics: readonly Hex[] }>): Hex {
+  for (const log of logs) {
+    try {
+      const decoded = decodeEventLog({
+        abi: intentRegistryAbi,
+        data: log.data,
+        eventName: "IntentPosted",
+        topics: [...log.topics] as [Hex, ...Hex[]],
+      });
+      const intentId = (decoded.args as { intentId?: Hex }).intentId;
+      if (intentId) return intentId;
+    } catch {
+      // Ignore logs from other contracts in the same receipt.
+    }
+  }
+  throw new Error("IntentRegistry transaction did not emit IntentPosted");
+}
+
+function rateFractionToBps(rate: number) {
+  return BigInt(Math.round(rate * 10_000));
+}
+
+function bpsToWad(rateBps: bigint) {
+  return rateBps * 100_000_000_000_000n;
+}
+
 async function waitForReceipt(publicClient: PublicClient | undefined, hash: Hex) {
-  if (!publicClient) return;
-  await publicClient.waitForTransactionReceipt({ hash });
+  if (!publicClient) throw new Error("No public client available for receipt polling");
+  return publicClient.waitForTransactionReceipt({ hash });
 }
 
 async function runWalletAction(

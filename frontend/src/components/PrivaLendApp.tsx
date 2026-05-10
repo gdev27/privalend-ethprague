@@ -373,9 +373,10 @@ function LendPage({ active, go, protocol }: { active: boolean; go: (key: PageKey
   const [durationDays, setDurationDays] = useState("");
   const lendAmountBaseUnits = protocol.parseDebtAmount(lendAmount);
   const minimumRateFraction = parseRatePercent(minimumRate);
+  const durationDaysValue = parseDurationDays(durationDays);
   const hasEnoughBalance = lendAmountBaseUnits !== null && protocol.debtToken.balance >= lendAmountBaseUnits;
   const hasEnoughAllowance = lendAmountBaseUnits !== null && protocol.debtToken.allowance >= lendAmountBaseUnits;
-  const formReady = lendAmountBaseUnits !== null && minimumRateFraction !== null && hasEnoughBalance;
+  const formReady = lendAmountBaseUnits !== null && minimumRateFraction !== null && durationDaysValue !== null && hasEnoughBalance;
 
   return (
     <section className={`page intent-page${active ? " on" : ""}`} id="p-lend">
@@ -410,13 +411,18 @@ function LendPage({ active, go, protocol }: { active: boolean; go: (key: PageKey
           <IntentActionButton
             className="btn-primary"
             formReady={formReady}
-            invalidLabel={lendAmountBaseUnits === null || minimumRateFraction === null ? "Enter amount and rate" : "Insufficient USDC"}
+            invalidLabel={lendAmountBaseUnits === null || minimumRateFraction === null || durationDaysValue === null ? "Enter amount, rate, and duration" : "Insufficient USDC"}
             needsApproval={formReady && !hasEnoughAllowance}
             approvalLabel="Approve USDC"
             readyLabel="Encrypt and submit offer"
             protocol={protocol}
             onApprove={() => lendAmountBaseUnits && void protocol.approveDebt(lendAmountBaseUnits)}
-            onSubmit={() => lendAmountBaseUnits && minimumRateFraction && void protocol.submitLend({ amount: lendAmountBaseUnits, minimumRate: minimumRateFraction })}
+            onSubmit={() =>
+              lendAmountBaseUnits &&
+              minimumRateFraction &&
+              durationDaysValue &&
+              void protocol.submitLend({ amount: lendAmountBaseUnits, durationDays: durationDaysValue, minimumRate: minimumRateFraction })
+            }
           />
         </div>
       </div>
@@ -432,9 +438,10 @@ function BorrowPage({ active, go, protocol }: { active: boolean; go: (key: PageK
   const borrowAmountBaseUnits = protocol.parseDebtAmount(borrowAmount);
   const collateralAmountBaseUnits = protocol.parseCollateralAmount(collateralAmount);
   const maxRateFraction = parseRatePercent(maxRate);
+  const durationDaysValue = parseDurationDays(durationDays);
   const hasEnoughCollateral = collateralAmountBaseUnits !== null && protocol.collateralToken.balance >= collateralAmountBaseUnits;
   const hasEnoughAllowance = collateralAmountBaseUnits !== null && protocol.collateralToken.allowance >= collateralAmountBaseUnits;
-  const formReady = borrowAmountBaseUnits !== null && collateralAmountBaseUnits !== null && maxRateFraction !== null && hasEnoughCollateral;
+  const formReady = borrowAmountBaseUnits !== null && collateralAmountBaseUnits !== null && maxRateFraction !== null && durationDaysValue !== null && hasEnoughCollateral;
   const risk = calculateBorrowRisk({
     borrowAmount,
     collateralAmount,
@@ -474,7 +481,7 @@ function BorrowPage({ active, go, protocol }: { active: boolean; go: (key: PageK
           <IntentActionButton
             className="btn-warn"
             formReady={formReady}
-            invalidLabel={borrowAmountBaseUnits === null || collateralAmountBaseUnits === null || maxRateFraction === null ? "Enter amount, collateral, and rate" : "Insufficient WETH"}
+            invalidLabel={borrowAmountBaseUnits === null || collateralAmountBaseUnits === null || maxRateFraction === null || durationDaysValue === null ? "Enter amount, collateral, rate, and duration" : "Insufficient WETH"}
             needsApproval={formReady && !hasEnoughAllowance}
             approvalLabel="Approve WETH"
             readyLabel="Encrypt and submit request"
@@ -484,9 +491,11 @@ function BorrowPage({ active, go, protocol }: { active: boolean; go: (key: PageK
               borrowAmountBaseUnits &&
               collateralAmountBaseUnits &&
               maxRateFraction &&
+              durationDaysValue &&
               void protocol.submitBorrow({
                 amount: borrowAmountBaseUnits,
                 collateralAmount: collateralAmountBaseUnits,
+                durationDays: durationDaysValue,
                 maxRate: maxRateFraction,
               })
             }
@@ -644,6 +653,14 @@ function calculateBorrowRisk({
 function parseFiniteNumber(value: string) {
   const parsed = Number(value.replace(/,/g, ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.NaN;
+}
+
+function parseDurationDays(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return 30;
+  const parsed = Number(trimmed.replace(/,/g, ""));
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.ceil(parsed);
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -847,6 +864,8 @@ function EmptyState({ label }: { label: string }) {
 function loanStatusLabel(status: PoolLoan["status"]) {
   if (status === 1) return "Active";
   if (status === 2) return "Repaid";
+  if (status === 3) return "Liquidated";
+  if (status === 4) return "Defaulted";
   return "None";
 }
 

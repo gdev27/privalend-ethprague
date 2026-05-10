@@ -184,6 +184,11 @@ Paths are under `contracts/src/` unless noted.
 - **`access/OwnerRoles.sol`** — Used by `IntentRegistry` and `MatchingCoordinator`: `owner` plus `isMatcher` for matcher-only functions (`registerMatchDigest`, `executeMatch`).
 - **`access/OwnableLite.sol`** — Minimal `owner` for oracle routers, Chainlink adapter, `PositionManager`, `LiquidationManager`.
 
+### Signed Pool Path
+
+- **`EngineRegistry.sol`** — Ownable pointer to the KMS/fallback signer address that is allowed to authorize signed settlements.
+- **`PrivaLendPool.sol`** — Monolithic hackathon settlement pool used by `server/src/executor.ts`: recomputes `proposalHash`, verifies the EIP-191 KMS signature, transfers principal from lenders to borrower, escrows borrower collateral, tracks simple principal repayment, lender claim withdrawal, and borrower collateral return after full repayment.
+
 ### IntentRegistry
 
 **File:** `IntentRegistry.sol`  
@@ -288,14 +293,14 @@ Paths are under `contracts/src/` unless noted.
 
 - **`engine.ts`** — **Pure** matching: sort borrows by size descending, lends by rate ascending, greedily fill each borrow from compatible lends (same loan `token`), track remaining per `lendIntentId`, compute **principal-weighted average** rate for the borrow; **reject** the partial fill if blended rate **>** borrower’s max rate (rolls back remainder to lenders for that borrow).
 - **`ecies.ts`** — Decrypts rate ciphertexts with `eciesjs` when `CRE_PRIVATE_KEY` is present; optionally accepts **plaintext** decimal rates in `(0, 1)` for local dev when fallback is allowed.
-- **`canonical.ts`** — `canonicalEncode` + `proposalHash` (**keccak256**) over a stable JSON shape so verifiers (or future on-chain code) can pin **exactly** what was signed.
+- **`canonical.ts`** — `canonicalEncode` + `proposalHash` (**keccak256**) over the same component-hash scheme used by `PrivaLendPool.computeProposalHash`, so the pool can recompute exactly what the KMS signed.
 - **`main.ts`** — Chainlink **CRE** `Runner`: HTTP trigger parses `MatchRequest`, runs engine, signs each proposal hash with **KMS** (Orbitport) or **fallback** local key from secrets, returns `MatchResponse` with `SignedProposal[]`.
 
 ### `server/` — Intent pool and epoch tick
 
 - REST-style routes: post lend/borrow intents, cancel, list proposals.
 - **`runEpoch`**: builds `MatchRequest` from pending borrows and lends **not** locked by another pending proposal’s ticks, POSTs to **`CRE_WORKFLOW_URL`**, stores signed proposals with TTL (pending proposals expire on a short cadence).
-- **`executor.ts`**: separate process that polls proposals and calls a **`settleMatch`** ABI on **`POOL_ADDRESS`** — this targets a **monolithic pool-style contract** not present in this repo’s `contracts/src` tree. Treat it as a **compatibility stub** or future wiring; the **modular** on-chain path settles via **`MatchingCoordinator.executeMatch`** after digest registration, not via `settleMatch`.
+- **`executor.ts`**: separate process that polls proposals and calls the signed-pool **`settleMatch`** ABI on **`POOL_ADDRESS`**. It hashes server string IDs into on-chain `bytes32` IDs, converts decimal rates into WAD units, and submits the KMS-signed proposal to `PrivaLendPool`.
 
 ### `client-snippets/`
 
@@ -321,9 +326,9 @@ The protocol does **not** remove the need for borrowers and lenders to trust **t
 
 2. **Rate units:** On-chain intents use **basis points** (100 bps = 1%). The TypeScript engine uses **decimal fractions in `(0, 1)`** (e.g. `0.05` for 5%). Any production bridge from **SignedProposal** to **`executeMatch`** must convert consistently.
 
-3. **Intent IDs:** On-chain `intentId` is **`bytes32`**. Server/engine use **UUID strings** for lend/borrow records in the demo API — binding those worlds requires an explicit mapping strategy (e.g. hash commitments, or storing chain `intentId` after `postIntent`).
+3. **Intent IDs:** The signed-pool path hashes server/engine string IDs into **`bytes32`** before settlement. The modular `IntentRegistry` still uses its own deterministic `bytes32` IDs, so the two settlement paths remain intentionally separate.
 
-4. **Executor vs modular contracts:** Running `server/src/executor.ts` against **`MatchingCoordinator`** requires a new ABI adapter; it is **not** a drop-in for the current Forge modules without additional Solidity or script glue.
+4. **Two settlement paths:** `PrivaLendPool` is the KMS-signed hackathon path used by `server/src/executor.ts`. `MatchingCoordinator` is the modular on-chain intent path with epoch digest registration. They share domain concepts but are not drop-in replacements for each other.
 
 ---
 

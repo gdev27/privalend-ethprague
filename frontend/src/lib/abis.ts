@@ -42,6 +42,129 @@ export const erc20Abi = [
   },
 ] as const;
 
+export const intentRegistryAbi = [
+  {
+    type: "function",
+    name: "postIntent",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "side", type: "uint8" },
+      { name: "token", type: "address" },
+      { name: "collateralToken", type: "address" },
+      { name: "maxAmount", type: "uint256" },
+      { name: "rateBps", type: "uint256" },
+      { name: "minCollateralRatioBps", type: "uint256" },
+      { name: "expiry", type: "uint256" },
+    ],
+    outputs: [{ name: "intentId", type: "bytes32" }],
+  },
+  {
+    type: "event",
+    name: "IntentPosted",
+    inputs: [
+      { indexed: true, name: "intentId", type: "bytes32" },
+      { indexed: true, name: "maker", type: "address" },
+      { indexed: false, name: "side", type: "uint8" },
+      { indexed: false, name: "token", type: "address" },
+      { indexed: false, name: "collateralToken", type: "address" },
+      { indexed: false, name: "maxAmount", type: "uint256" },
+      { indexed: false, name: "rateBps", type: "uint256" },
+      { indexed: false, name: "minCollateralRatioBps", type: "uint256" },
+      { indexed: false, name: "expiry", type: "uint256" },
+      { indexed: false, name: "nonce", type: "uint256" },
+    ],
+  },
+] as const;
+
+export const loanCoreAbi = [
+  {
+    type: "function",
+    name: "nextLoanId",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getLoan",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [
+      {
+        type: "tuple",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "borrower", type: "address" },
+          { name: "token", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "principal", type: "uint256" },
+          { name: "outstandingPrincipal", type: "uint256" },
+          { name: "collateralAmount", type: "uint256" },
+          { name: "weightedRateBps", type: "uint256" },
+          { name: "minCollateralRatioBps", type: "uint256" },
+          { name: "startTimestamp", type: "uint256" },
+          { name: "dueTimestamp", type: "uint256" },
+          { name: "status", type: "uint8" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "getLoanLenders",
+    stateMutability: "view",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [{ type: "address[]" }],
+  },
+  {
+    type: "function",
+    name: "lenderPrincipalByLoan",
+    stateMutability: "view",
+    inputs: [
+      { name: "loanId", type: "uint256" },
+      { name: "lender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "lenderClaimableByLoan",
+    stateMutability: "view",
+    inputs: [
+      { name: "loanId", type: "uint256" },
+      { name: "lender", type: "address" },
+    ],
+    outputs: [{ type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "withdrawClaim",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [],
+  },
+] as const;
+
+export const positionManagerAbi = [
+  {
+    type: "function",
+    name: "repay",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "loanId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "closePosition",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "loanId", type: "uint256" }],
+    outputs: [],
+  },
+] as const;
+
 export const privaLendPoolAbi = [
   {
     type: "function",

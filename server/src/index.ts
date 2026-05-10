@@ -45,7 +45,7 @@ app.post("/api/v1/lend-intent", async (c) => {
   try {
     const body = await readJsonObject(c, debug);
     const intent: LendIntent = {
-      intentId: crypto.randomUUID(),
+      intentId: normalizeIntentId(body.intentId) ?? crypto.randomUUID(),
       userId: normalizeAddress(body.userId, "userId"),
       token: normalizeAddress(body.token, "token"),
       amount: normalizeBaseUnits(body.amount, "amount"),
@@ -70,7 +70,7 @@ app.post("/api/v1/borrow-intent", async (c) => {
   try {
     const body = await readJsonObject(c, debug);
     const intent: BorrowIntent = {
-      intentId: crypto.randomUUID(),
+      intentId: normalizeIntentId(body.intentId) ?? crypto.randomUUID(),
       borrower: normalizeAddress(body.borrower, "borrower"),
       token: normalizeAddress(body.token, "token"),
       amount: normalizeBaseUnits(body.amount, "amount"),
@@ -117,8 +117,28 @@ app.get("/api/v1/proposals/:id", (c) => {
   return proposal ? c.json(proposal) : c.json({ error: "not found" }, 404);
 });
 
+app.post("/api/v1/proposals/:id/status", async (c) => {
+  if (!isAdminAuthorized(c)) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const proposal = proposals.find((p) => p.proposalId === c.req.param("id"));
+  if (!proposal) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json<Record<string, unknown>>();
+  const status = normalizeNonEmptyString(body.status, "status");
+  if (!["pending", "expired", "settled", "failed"].includes(status)) {
+    return c.json({ error: "invalid status" }, 400);
+  }
+
+  proposal.status = status as StoredSignedProposal["status"];
+  const borrow = borrowIntents.find((intent) => intent.intentId === proposal.borrowIntentId);
+  if (borrow && status === "settled") borrow.status = "matched";
+  return c.json({ proposal });
+});
+
 app.post("/admin/tick", async (c) => {
-  if (c.req.header("x-admin-key") !== process.env.ADMIN_KEY) {
+  if (!isAdminAuthorized(c)) {
     return c.json({ error: "unauthorized" }, 401);
   }
 
@@ -129,7 +149,7 @@ app.post("/admin/tick", async (c) => {
 export async function runEpoch(): Promise<{ matched: number; skipped?: string }> {
   const lockedLendIds = new Set(
     proposals
-      .filter((proposal) => proposal.status === "pending")
+      .filter((proposal) => proposal.status === "pending" || proposal.status === "settled")
       .flatMap((proposal) => proposal.matchedTicks.map((tick) => tick.lendIntentId)),
   );
 
@@ -357,6 +377,24 @@ function normalizeEncryptedRate(value: unknown, field: string): string {
   }
 
   return text;
+}
+
+function normalizeIntentId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const text = String(value).trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(text)) {
+    throw new ApiInputError("intentId must be a bytes32 hex string when provided", {
+      details: `Received ${summarizeValue(text)}`,
+      field: "intentId",
+      status: 422,
+    });
+  }
+  return text.toLowerCase();
+}
+
+function isAdminAuthorized(c: Context): boolean {
+  const expected = process.env.ADMIN_KEY?.trim();
+  return !expected || c.req.header("x-admin-key")?.trim() === expected;
 }
 
 function normalizeNonEmptyString(value: unknown, field: string): string {

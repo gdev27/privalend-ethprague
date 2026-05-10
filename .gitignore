@@ -5,6 +5,7 @@ dist/
 !.env.example
 *.log
 .DS_Store
+.claude/
 
 engine/src/.cre_build_tmp.*
 
